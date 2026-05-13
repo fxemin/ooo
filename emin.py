@@ -20,7 +20,11 @@ BOT_TOKEN    = "8361874404:AAFtGTflPuqUJC9zL1oVg90WuJRrDLOQzKY"
 ADMIN_ID     = 6824684800
 REWARD_TMT   = 0.10
 WITHDRAW_MIN = 1.0
-RENDER_URL   = "https://vpn-bot-z9rj.onrender.com"
+RENDER_URL    = "https://vpn-bot-z9rj.onrender.com"
+
+# TGrass entegrasyonu
+TGRASS_TOKEN  = "02ff4e6e1bcb44a8b0d13de32a6452ae"
+TGRASS_API    = "https://api.tgrass.net/v1"
 
 MONGO_URI = (
     "mongodb+srv://emin_saparbayew09:emin.1235.@emin.ri18oi5.mongodb.net"
@@ -225,6 +229,67 @@ def clear_reklamlar():
     col_reklam.delete_many({})
 
 # ╔══════════════════════════════════════════════════════════╗
+#                   TGRASS — API ENTEGRASYONU
+# ╚══════════════════════════════════════════════════════════╝
+def tgrass_get_offers(user):
+    """
+    TGrass resmi API (POST https://tgrass.space/offers)
+    Kullanıcıya özel kanal tekliflerini döndürür.
+    Döküman: tg_user_id + tg_login + lang + is_premium + gender → offers listesi
+    """
+    if get_setting("tgrass", "on") != "on":
+        return []
+    try:
+        payload = {
+            "tg_user_id": user.id,
+            "tg_login":   user.username or "",
+            "lang":       getattr(user, "language_code", "en") or "en",
+            "is_premium": bool(getattr(user, "is_premium", False)),
+            "gender":     "male",
+        }
+        resp = requests.post(
+            f"{TGRASS_API}/offers",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Auth": TGRASS_TOKEN,
+            },
+            timeout=10
+        )
+        if resp.status_code != 200:
+            print(f"[TGrass] HTTP {resp.status_code}: {resp.text[:80]}")
+            return []
+        data = resp.json()
+        if data.get("status") != "ok":
+            print(f"[TGrass] status not ok: {data}")
+            return []
+        offers = data.get("offers", [])
+        print(f"[TGrass] {len(offers)} offer(s) for user {user.id}")
+        return offers
+    except Exception as e:
+        print(f"[TGrass] Error: {e}")
+        return []
+
+def check_tgrass_subscription(user):
+    """
+    TGrass üzerinden abonelik kontrolü.
+    subscribed=False olan kanalları döndürür: [(id, link, name), ...]
+    """
+    if get_setting("tgrass", "on") != "on":
+        return []
+    not_sub = []
+    offers = tgrass_get_offers(user)
+    for offer in offers:
+        if offer.get("type") != "channel":
+            continue
+        if not offer.get("subscribed", True):
+            name = offer.get("name") or "TGrass Kanal"
+            link = offer.get("link") or ""
+            if link:
+                not_sub.append((f"tg_{offer.get('offer_id','')}", link, name))
+    return not_sub
+
+# ╔══════════════════════════════════════════════════════════╗
 #                   FSM (СОСТОЯНИЯ)
 # ╚══════════════════════════════════════════════════════════╝
 user_states = {}
@@ -268,7 +333,7 @@ def check_subs(user_id):
 # ╔══════════════════════════════════════════════════════════╗
 #                   КЛАВИАТУРЫ
 # ╚══════════════════════════════════════════════════════════╝
-def build_main_keyboard(user_id=None):
+def build_main_keyboard(user_id=None, _tgrass_user=None):
     me       = bot.get_me()
     ref_link = f"https://t.me/{me.username}?start={user_id}" if user_id else f"https://t.me/{me.username}"
     share_url = (f"https://t.me/share/url?url={ref_link}"
@@ -286,13 +351,20 @@ def build_main_keyboard(user_id=None):
         InlineKeyboardButton(text=f"✨ {name}", url=link)
         for _, link, name, _ in get_addlist()
     ]
-    # TGrass
-    tgrass = get_setting("tgrass", "on")
-    tgrass_user = get_setting("tgrass_username", "")
+    # TGrass — offers API'den kullanıcıya özel (abone olmadıkları kanallar)
+    # Not: build_main_keyboard user=None ile çağrılırsa TGrass butonları gözükmez
     tgrass_btns = []
-    if tgrass == "on" and tgrass_user:
-        tgrass_link = f"https://t.me/{tgrass_user}"
-        tgrass_btns = [InlineKeyboardButton(text="⚙️ TGrass", url=tgrass_link)]
+    if _tgrass_user is not None and get_setting("tgrass", "on") == "on":
+        offers = tgrass_get_offers(_tgrass_user)
+        for offer in offers:
+            if offer.get("type") != "channel":
+                continue
+            if not offer.get("subscribed", True):
+                _name = offer.get("name") or "⚙️ TGrass"
+                _link = offer.get("link") or ""
+                if _link:
+                    tgrass_btns.append(InlineKeyboardButton(
+                        text=f"⚙️ {_name}", url=_link))
 
     all_btns = sponsor_btns + addlist_btns + tgrass_btns
     if all_btns:
@@ -305,47 +377,59 @@ def build_main_keyboard(user_id=None):
     )
     kb.row(
         InlineKeyboardButton(text="💰 Баланс",        callback_data="my_balance"),
-        InlineKeyboardButton(text="📊 Статистика",    callback_data="stats"),
+        InlineKeyboardButton(text="🏆 Top 10",         callback_data="top10"),
     )
     kb.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="enter_promo"))
     return kb
 
 def build_admin_keyboard():
-    total, today, week = db_get_stats()
-    sp_count = col_sponsors.count_documents({})
-    al_count = col_addlist.count_documents({})
-    tgrass   = get_setting("tgrass", "on")
-    tg_icon  = "✅" if tgrass == "on" else "❌"
+    total, today, _ = db_get_stats()
+    tgrass  = get_setting("tgrass", "on")
+    tg_icon = "✅" if tgrass == "on" else "❌"
 
     kb = InlineKeyboardMarkup(row_width=2)
+    # Статистика — одна кнопка во всю ширину
     kb.row(InlineKeyboardButton(
-        text=f"📊 Польз: {total} (+{today} сег.)",
+        text=f"🏁 Польз: {total} (сег. +{today})",
         callback_data="adm_stats"
     ))
+    # Рассылка + В каналы
     kb.row(
-        InlineKeyboardButton(text="➕ Спонсор",   callback_data="adm_add_sponsor"),
-        InlineKeyboardButton(text="🗑 Спонсор",   callback_data="adm_del_sponsor"),
+        InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm_broadcast"),
+        InlineKeyboardButton(text="📡 Пост в каналы", callback_data="adm_send_channel"),
     )
+    # VPN + Промокод
     kb.row(
-        InlineKeyboardButton(text="➕ Addlist",   callback_data="adm_add_addlist"),
-        InlineKeyboardButton(text="🗑 Addlist",   callback_data="adm_del_addlist"),
-    )
-    kb.row(
-        InlineKeyboardButton(text="🔑 Изм. код VPN",  callback_data="adm_code"),
+        InlineKeyboardButton(text="🔑 Изменить VPN",  callback_data="adm_code"),
         InlineKeyboardButton(text="🎟 Промокод",       callback_data="adm_promo"),
     )
+    # Удалить рекламу + График
     kb.row(
-        InlineKeyboardButton(text="📢 Рассылка",       callback_data="adm_broadcast"),
-        InlineKeyboardButton(text="📡 В каналы",       callback_data="adm_send_channel"),
+        InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"),
+        InlineKeyboardButton(text="📈 График роста",  callback_data="adm_growth"),
     )
+    # Спонсор добавить/удалить
     kb.row(
-        InlineKeyboardButton(text="🗑 Удалить рекламу", callback_data="adm_del_reklam"),
+        InlineKeyboardButton(text="➕ Спонсор",       callback_data="adm_add_sponsor"),
+        InlineKeyboardButton(text="🗑 Спонсор",       callback_data="adm_del_sponsor"),
+    )
+    # Addlist добавить/удалить
+    kb.row(
+        InlineKeyboardButton(text="➕ Addlist",       callback_data="adm_add_addlist"),
+        InlineKeyboardButton(text="🗑 Addlist",       callback_data="adm_del_addlist"),
+    )
+    # TGrass вкл/выкл + Обновить TGrass
+    kb.row(
         InlineKeyboardButton(text=f"⚙️ TGrass {tg_icon}", callback_data="adm_tgrass"),
+        InlineKeyboardButton(text="🔄 Обновить TGrass",    callback_data="adm_tgrass_update"),
     )
+    # Добавить/удалить администратора
     kb.row(
-        InlineKeyboardButton(text="📈 График роста",   callback_data="adm_growth"),
-        InlineKeyboardButton(text="✏️ Изм. текст",     callback_data="adm_welcome"),
+        InlineKeyboardButton(text="👤 Добавить адм.",  callback_data="adm_add_admin"),
+        InlineKeyboardButton(text="👤 Удалить адм.",   callback_data="adm_del_admin"),
     )
+    # Изменить приветствие
+    kb.row(InlineKeyboardButton(text="✏️ Изм. текст", callback_data="adm_welcome"))
     return kb
 
 def build_unsub_keyboard(not_sub):
@@ -373,45 +457,39 @@ def cmd_start(message):
 
     is_new = db_add_user(user.id, user.username or user.first_name, referred_by=ref_id)
 
-    # Обновить описание бота
-    threading.Thread(target=_update_description, daemon=True).start()
-
     welcome = get_setting("welcome_text") or "👋 <b>Добро пожаловать!</b>"
     bot.send_message(message.chat.id, welcome,
-                     reply_markup=build_main_keyboard(user.id))
-
-def _update_description():
-    try:
-        total = col_users.count_documents({})
-        bot.set_my_description(f"👥 {total:,} пользователей".replace(",", " "))
-    except Exception:
-        pass
+                     reply_markup=build_main_keyboard(user.id, _tgrass_user=user))
 
 # ╔══════════════════════════════════════════════════════════╗
 #                   /admin
 # ╚══════════════════════════════════════════════════════════╝
+def is_extra_admin(uid):
+    return bool(col_settings.find_one({"key": f"extra_admin_{uid}"}))
+
+def build_extra_admin_kb():
+    """Extra adminler icin kisitli panel."""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm_broadcast"),
+        InlineKeyboardButton(text="📡 Пост в каналы", callback_data="adm_send_channel"),
+    )
+    kb.row(InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"))
+    return kb
+
 @bot.message_handler(commands=["admin"])
 def cmd_admin(message):
-    if message.from_user.id != ADMIN_ID:
+    uid = message.from_user.id
+    if uid == ADMIN_ID:
+        bot.send_message(message.chat.id,
+            "⚙️ <b>Панель администратора</b>",
+            reply_markup=build_admin_keyboard())
+    elif is_extra_admin(uid):
+        bot.send_message(message.chat.id,
+            "⚙️ <b>Панель администратора</b>",
+            reply_markup=build_extra_admin_kb())
+    else:
         return
-    total, today, week = db_get_stats()
-    sp_count  = col_sponsors.count_documents({})
-    al_count  = col_addlist.count_documents({})
-    tgrass    = get_setting("tgrass", "on")
-    tg_status = "✅ Включен" if tgrass == "on" else "❌ Выключен"
-    vpn       = get_setting("vpn_code")
-    bot.send_message(
-        message.chat.id,
-        f"⚙️ <b>Панель администратора</b>\n\n"
-        f"👥 Пользователей: <b>{total}</b>\n"
-        f"📅 Сегодня: <b>+{today}</b>\n"
-        f"📅 За неделю: <b>+{week}</b>\n"
-        f"📢 Спонсоров: <b>{sp_count}</b>\n"
-        f"📋 Addlist: <b>{al_count}</b>\n"
-        f"⚙️ TGrass: <b>{tg_status}</b>\n\n"
-        f"🔑 VPN код: <code>{vpn}</code>",
-        reply_markup=build_admin_keyboard()
-    )
 
 # ╔══════════════════════════════════════════════════════════╗
 #              ПРОМОКОД КОМАНДЫ (/create_promo, /promo)
@@ -521,6 +599,8 @@ def cb_check_sub(call):
         return
 
     not_sub = check_subs(user.id)
+    # TGrass kanallarını da kontrol et
+    not_sub += check_tgrass_subscription(user)
 
     if not_sub:
         try:
@@ -611,29 +691,54 @@ def cb_withdraw(call):
         show_alert=True
     )
 
-@bot.callback_query_handler(func=lambda c: c.data == "stats")
-def cb_stats(call):
-    total, today, week = db_get_stats()
-    sp_count  = col_sponsors.count_documents({})
-    al_count  = col_addlist.count_documents({})
-    tgrass    = get_setting("tgrass", "on")
-    tg_status = "✅ Включен" if tgrass == "on" else "❌ Выключен"
+@bot.callback_query_handler(func=lambda c: c.data == "top10")
+def cb_top10(call):
+    from pymongo import DESCENDING
+    docs = col_users.find(
+        {"balance": {"$gt": 0}},
+        {"user_id": 1, "username": 1, "balance": 1}
+    ).sort("balance", DESCENDING).limit(10)
+    rows = list(docs)
+    if not rows:
+        bot.answer_callback_query(call.id, "Heniz balans ýok!", show_alert=True)
+        return
+    medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    lines  = []
+    for i, doc in enumerate(rows):
+        medal = medals[i] if i < len(medals) else f"{i+1}."
+        name  = f"@{doc['username']}" if doc.get("username") else f"ID:{doc['user_id']}"
+        bal   = round(doc.get("balance", 0), 2)
+        lines.append(f"{medal} {name} — <b>{bal:.2f} TMT</b>")
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
     bot.send_message(
         call.message.chat.id,
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"👥 Пользователей: <b>{total}</b>\n"
-        f"📢 Спонсоров: <b>{sp_count}</b>\n"
-        f"📋 Addlist: <b>{al_count}</b>\n"
-        f"⚙️ TGrass: <b>{tg_status}</b>",
+        "🏆 <b>Top 10 — Iň köp balans</b>\n\n" + "\n".join(lines),
         reply_markup=kb
     )
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda c: c.data == "enter_promo")
 def cb_enter_promo(call):
-    set_state(call.from_user.id, "promo_input")
+    user = call.from_user
+    # Abonelik kontrolü — önce tüm kanallara üye olmalı
+    not_sub = check_subs(user.id)
+    not_sub += check_tgrass_subscription(user)
+    if not_sub:
+        try:
+            bot.edit_message_reply_markup(
+                call.message.chat.id, call.message.message_id,
+                reply_markup=build_unsub_keyboard(not_sub)
+            )
+        except Exception:
+            pass
+        bot.answer_callback_query(
+            call.id,
+            "❌ Промокод kullanmak üçin ählisine agza boluň!",
+            show_alert=True
+        )
+        return
+    set_state(user.id, "promo_input")
     bot.send_message(call.message.chat.id,
         "🎟 Введите промокод:\n\n"
         "Или отмените: /cancel")
@@ -643,15 +748,23 @@ def cb_enter_promo(call):
 def cb_back_main(call):
     welcome = get_setting("welcome_text") or "👋 <b>Добро пожаловать!</b>"
     bot.send_message(call.message.chat.id, welcome,
-                     reply_markup=build_main_keyboard(call.from_user.id))
+                     reply_markup=build_main_keyboard(call.from_user.id,
+                                                      _tgrass_user=call.from_user))
     bot.answer_callback_query(call.id)
 
 # ╔══════════════════════════════════════════════════════════╗
 #              CALLBACK — АДМИНИСТРАТОР
 # ╚══════════════════════════════════════════════════════════╝
-@bot.callback_query_handler(func=lambda c: c.data.startswith("adm_") and c.from_user.id == ADMIN_ID)
+EXTRA_ADMIN_ALLOWED = {"adm_broadcast", "adm_send_channel", "adm_del_reklam"}
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("adm_") and
+    (c.from_user.id == ADMIN_ID or is_extra_admin(c.from_user.id)))
 def admin_callbacks(call):
     data = call.data
+    # Extra admin yetki kontrolu
+    if call.from_user.id != ADMIN_ID and data not in EXTRA_ADMIN_ALLOWED:
+        bot.answer_callback_query(call.id, "❌ Yetkiniz yok!", show_alert=True)
+        return
 
     # ── Статистика ──────────────────────────────────────────────────────────────
     if data == "adm_stats":
@@ -659,21 +772,19 @@ def admin_callbacks(call):
         sp_count  = col_sponsors.count_documents({})
         al_count  = col_addlist.count_documents({})
         tgrass    = get_setting("tgrass", "on")
-        tg_status = "✅ Включен" if tgrass == "on" else "❌ Выключен"
-        vpn       = get_setting("vpn_code")
+        tg_status = "Aç" if tgrass == "on" else "Öçür"
+        adm_count = col_settings.count_documents({"key": {"$regex": "^admin_"}})
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(text="🔙 Назад", callback_data="adm_back"))
         bot.send_message(
             call.message.chat.id,
-            f"📊 <b>Статистика бота</b>\n\n"
-            f"👥 Пользователей: <b>{total}</b>\n"
-            f"📅 Сегодня: <b>+{today}</b>\n"
-            f"📅 За неделю: <b>+{week}</b>\n"
-            f"📢 Спонсоров: <b>{sp_count}</b>\n"
-            f"📋 Addlist: <b>{al_count}</b>\n"
-            f"⚙️ TGrass: <b>{tg_status}</b>\n\n"
-            f"🔑 VPN код: <code>{vpn}</code>",
-            reply_markup=build_admin_keyboard()
+            f"📊 <b>Statistika:</b>\n\n"
+            f"👥 Ulanyjylar: <b>{total}</b>\n"
+            f"📢 Kanallar: <b>{sp_count}</b>\n"
+            f"🔗 Addlistler: <b>{al_count}</b>\n"
+            f"⚙️ TGRASS: <b>{tg_status}</b>",
+            reply_markup=kb
         )
-        bot.answer_callback_query(call.id)
 
     # ── Добавить спонсора ──────────────────────────────────────────────────────
     elif data == "adm_add_sponsor":
@@ -849,23 +960,71 @@ def admin_callbacks(call):
             f"✏️ Текущее приветствие:\n\n{cur}\n\nВведите новый текст:")
         bot.answer_callback_query(call.id)
 
+    # ── TGrass Güncelle ──────────────────────────────────────────────────────
+    elif data == "adm_tgrass_update":
+        try:
+            resp = requests.post(
+                f"{TGRASS_API}/offers",
+                json={"tg_user_id": 0, "tg_login": "test",
+                      "lang": "en", "is_premium": False, "gender": "male"},
+                headers={"Content-Type": "application/json", "Auth": TGRASS_TOKEN},
+                timeout=10
+            )
+            st = "✅ OK" if resp.status_code == 200 else f"❌ HTTP {resp.status_code}"
+        except Exception as e:
+            st = f"❌ {str(e)[:40]}"
+        bot.send_message(call.message.chat.id,
+            f"🔄 <b>TGrass güncellendi!</b>\n\nBağlantı durumu: <b>{st}</b>",
+            reply_markup=build_admin_keyboard())
+        bot.answer_callback_query(call.id)
+
+    # ── Добавить/удалить администратора ──────────────────────────────────────
+    elif data == "adm_add_admin":
+        set_state(call.from_user.id, "adm_add_admin")
+        bot.send_message(call.message.chat.id,
+            "👤 Admin edilecek kullanıcının ID'sini girin:\n\n"
+            "⚠️ Bu admin sadece şunları yapabilir:\n"
+            "• Kullanıcılara reklam göndermek\n"
+            "• Kanallara post atmak\n"
+            "• Reklam silmek\n\nОтмена: /cancel")
+        bot.answer_callback_query(call.id)
+
+    elif data == "adm_del_admin":
+        # Extra admin listesini goster
+        extra_admins = list(col_settings.find({"key": {"$regex": "^extra_admin_"}}))
+        if not extra_admins:
+            bot.answer_callback_query(call.id, "Ek admin yok!", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup(row_width=1)
+        for adm in extra_admins:
+            adm_id = adm["key"].replace("extra_admin_", "")
+            adm_name = adm.get("value", adm_id)
+            kb.add(InlineKeyboardButton(
+                text=f"🗑 {adm_name} (ID: {adm_id})",
+                callback_data=f"del_extra_admin_{adm_id}"
+            ))
+        kb.add(InlineKeyboardButton(text="🔙 Назад", callback_data="adm_back"))
+        bot.send_message(call.message.chat.id, "Silinecek admini seçin:", reply_markup=kb)
+        bot.answer_callback_query(call.id)
+
     # ── Назад ─────────────────────────────────────────────────────────────────
     elif data == "adm_back":
-        total, today, week = db_get_stats()
-        tgrass    = get_setting("tgrass", "on")
-        tg_status = "✅ Включен" if tgrass == "on" else "❌ Выключен"
-        sp_count  = col_sponsors.count_documents({})
-        al_count  = col_addlist.count_documents({})
         bot.send_message(
             call.message.chat.id,
-            f"⚙️ <b>Панель администратора</b>\n\n"
-            f"👥 Пользователей: <b>{total}</b>\n"
-            f"📢 Спонсоров: <b>{sp_count}</b>\n"
-            f"📋 Addlist: <b>{al_count}</b>\n"
-            f"⚙️ TGrass: <b>{tg_status}</b>",
+            "⚙️ <b>Панель администратора</b>",
             reply_markup=build_admin_keyboard()
         )
         bot.answer_callback_query(call.id)
+
+# ── Extra admin sil ──────────────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("del_extra_admin_") and c.from_user.id == ADMIN_ID)
+def cb_del_extra_admin(call):
+    adm_id = call.data[len("del_extra_admin_"):]
+    col_settings.delete_one({"key": f"extra_admin_{adm_id}"})
+    bot.send_message(call.message.chat.id,
+        f"✅ Admin <code>{adm_id}</code> silindi!",
+        reply_markup=build_admin_keyboard())
+    bot.answer_callback_query(call.id)
 
 # ── TGrass on/off confirm ─────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data in ("tgrass_on_confirm", "tgrass_off_confirm",
@@ -905,7 +1064,7 @@ def cb_del_addlist(call):
     bot.answer_callback_query(call.id)
 
 # ── Отправка в каналы ─────────────────────────────────────────────────────────
-@bot.callback_query_handler(func=lambda c: c.data.startswith("sendch_") and c.from_user.id == ADMIN_ID)
+@bot.callback_query_handler(func=lambda c: c.data.startswith("sendch_") and (c.from_user.id == ADMIN_ID or is_extra_admin(c.from_user.id)))
 def cb_sendch(call):
     target = call.data[len("sendch_"):]
     all_ch = list(get_sponsors()) + list(get_addlist())
@@ -955,9 +1114,15 @@ def fsm_handler(message):
         return
 
     # Только для администратора — дальше
-    if uid != ADMIN_ID:
+    if uid != ADMIN_ID and not is_extra_admin(uid):
         clear_state(uid)
         return
+    # Extra admin sadece 3 islemi yapabilir
+    if is_extra_admin(uid) and uid != ADMIN_ID:
+        allowed = {"adm_broadcast", "adm_sendch_post"}
+        if state not in allowed:
+            clear_state(uid)
+            return
 
     # ── Добавить спонсора ─────────────────────────────────────────────────────
     if state == "adm_add_sponsor":
@@ -1091,6 +1256,33 @@ def fsm_handler(message):
         )
         bot.send_message(message.chat.id, "Панель:", reply_markup=build_admin_keyboard())
 
+    # ── Admin ekleme ─────────────────────────────────────────────────────────
+    elif state == "adm_add_admin":
+        try:
+            new_adm_id = int((message.text or "").strip())
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Geçersiz ID!"); return
+        # Extra admin kaydet (sadece broadcast + kanal post + reklam silme)
+        try:
+            adm_user = bot.get_chat(new_adm_id)
+            adm_name = f"@{adm_user.username}" if adm_user.username else str(new_adm_id)
+        except Exception:
+            adm_name = str(new_adm_id)
+        col_settings.update_one(
+            {"key": f"extra_admin_{new_adm_id}"},
+            {"$set": {"key": f"extra_admin_{new_adm_id}", "value": adm_name}},
+            upsert=True
+        )
+        clear_state(uid)
+        bot.send_message(message.chat.id,
+            f"✅ <b>{adm_name}</b> admin yapıldı!\n\n"
+            f"Yetkileri: Рассылка, Пост в каналы, Удалить рекламу",
+            reply_markup=build_admin_keyboard())
+        try:
+            bot.send_message(new_adm_id, "🎉 Admin yetkiniz verildi!\n/admin komutunu kullanabilirsiniz.")
+        except Exception:
+            pass
+
     # ── TGrass канал ─────────────────────────────────────────────────────────
     elif state == "tgrass_set_ch":
         uname = (message.text or "").strip().lstrip("@")
@@ -1142,6 +1334,8 @@ def run_bot():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+# ╔══════════════════════════════════════════════════════════╗
 
 # ╔══════════════════════════════════════════════════════════╗
 #                        ЗАПУСК
