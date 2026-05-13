@@ -54,6 +54,7 @@ col_addlist  = _db["addlist"]      # Addlist
 col_settings = _db["settings"]
 col_reklam   = _db["reklam"]
 col_promo    = _db["promo"]        # Промокоды
+col_tgrass_channels = _db["tgrass_channels"]
 
 col_users.create_index("user_id", unique=True)
 
@@ -231,62 +232,109 @@ def clear_reklamlar():
 # ╔══════════════════════════════════════════════════════════╗
 #                   TGRASS — API ENTEGRASYONU
 # ╚══════════════════════════════════════════════════════════╝
+def tgrass_fetch_channels():
+    """
+    TGrass API — GET https://api.tgrass.net/v1/offers
+    Authorization: Bearer TOKEN
+    Kanalları çeker, MongoDB'ye kaydeder.
+    """
+    if get_setting("tgrass", "on") != "on":
+        return 0, "TGrass kapalı"
+    try:
+        resp = requests.get(
+            f"{TGRASS_API}/offers",
+            headers={"Authorization": f"Bearer {TGRASS_TOKEN}"},
+            timeout=15
+        )
+        if resp.status_code != 200:
+            msg = f"HTTP {resp.status_code}: {resp.text[:80]}"
+            print(f"[TGrass] {msg}")
+            return 0, msg
+        data = resp.json()
+        # Cevap formatı: liste ya da {"offers": [...]} ya da {"status":"ok","offers":[...]}
+        if isinstance(data, list):
+            offers = data
+        elif isinstance(data, dict):
+            offers = data.get("offers", data.get("channels", []))
+        else:
+            offers = []
+        count = 0
+        for offer in offers:
+            username = (offer.get("username") or offer.get("login") or
+                        offer.get("channel_username") or "")
+            name     = (offer.get("name") or offer.get("title") or username)
+            link     = (offer.get("link") or offer.get("url") or
+                        (f"https://t.me/{username.lstrip('@')}" if username else ""))
+            if username and link:
+                _add_ch(col_tgrass_channels, link, name, username)
+                count += 1
+        print(f"[TGrass] Fetched {count} channels")
+        return count, "ok"
+    except Exception as e:
+        print(f"[TGrass] Error: {e}")
+        return 0, str(e)[:80]
+
 def tgrass_get_offers(user):
     """
-    TGrass resmi API (POST https://tgrass.space/offers)
-    Kullanıcıya özel kanal tekliflerini döndürür.
-    Döküman: tg_user_id + tg_login + lang + is_premium + gender → offers listesi
+    TGrass API — GET /offers (kullanıcıya özel)
+    Hem genel hem kullanıcıya özel teklifleri döndürür.
     """
     if get_setting("tgrass", "on") != "on":
         return []
     try:
-        payload = {
-            "tg_user_id": user.id,
-            "tg_login":   user.username or "",
-            "lang":       getattr(user, "language_code", "en") or "en",
-            "is_premium": bool(getattr(user, "is_premium", False)),
-            "gender":     "male",
-        }
-        resp = requests.post(
+        resp = requests.get(
             f"{TGRASS_API}/offers",
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Auth": TGRASS_TOKEN,
+            headers={"Authorization": f"Bearer {TGRASS_TOKEN}"},
+            params={
+                "tg_user_id": user.id,
+                "tg_login":   user.username or "",
+                "lang":       getattr(user, "language_code", "en") or "en",
+                "is_premium": str(bool(getattr(user, "is_premium", False))).lower(),
             },
             timeout=10
         )
         if resp.status_code != 200:
-            print(f"[TGrass] HTTP {resp.status_code}: {resp.text[:80]}")
+            print(f"[TGrass] HTTP {resp.status_code}")
             return []
         data = resp.json()
-        if data.get("status") != "ok":
-            print(f"[TGrass] status not ok: {data}")
-            return []
-        offers = data.get("offers", [])
-        print(f"[TGrass] {len(offers)} offer(s) for user {user.id}")
-        return offers
+        if isinstance(data, list):
+            return data
+        return data.get("offers", data.get("channels", []))
     except Exception as e:
         print(f"[TGrass] Error: {e}")
         return []
 
 def check_tgrass_subscription(user):
     """
-    TGrass üzerinden abonelik kontrolü.
-    subscribed=False olan kanalları döndürür: [(id, link, name), ...]
+    TGrass kanallarında abonelik kontrolü.
+    subscribed=False olanları döndürür: [(id, link, name), ...]
+    Eğer API cevabında subscribed alanı yoksa, MongoDB'deki listeyi kullanır.
     """
     if get_setting("tgrass", "on") != "on":
         return []
     not_sub = []
     offers = tgrass_get_offers(user)
-    for offer in offers:
-        if offer.get("type") != "channel":
-            continue
-        if not offer.get("subscribed", True):
-            name = offer.get("name") or "TGrass Kanal"
-            link = offer.get("link") or ""
-            if link:
-                not_sub.append((f"tg_{offer.get('offer_id','')}", link, name))
+    if offers:
+        # API cevabı varsa ondan kontrol et
+        for offer in offers:
+            if offer.get("type") not in ("channel", None):
+                continue
+            if not offer.get("subscribed", True):
+                name = offer.get("name") or offer.get("title") or "TGrass"
+                link = offer.get("link") or offer.get("url") or ""
+                if link:
+                    not_sub.append((f"tg_{offer.get('offer_id', '')}", link, name))
+    else:
+        # API'den cevap gelmezse MongoDB'deki TGrass kanallarını get_chat_member ile kontrol et
+        for ch_id, ch_link, ch_name, username in _ch_list(col_tgrass_channels):
+            if not username:
+                continue
+            try:
+                m = bot.get_chat_member("@" + username.lstrip("@"), user.id)
+                if m.status in ("left", "kicked", "banned"):
+                    not_sub.append((ch_id, ch_link, ch_name))
+            except Exception:
+                not_sub.append((ch_id, ch_link, ch_name))
     return not_sub
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -474,7 +522,10 @@ def build_extra_admin_kb():
         InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm_broadcast"),
         InlineKeyboardButton(text="📡 Пост в каналы", callback_data="adm_send_channel"),
     )
-    kb.row(InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"))
+    kb.row(
+        InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"),
+        InlineKeyboardButton(text="🔑 Изменить VPN",  callback_data="adm_code"),
+    )
     return kb
 
 @bot.message_handler(commands=["admin"])
@@ -755,7 +806,7 @@ def cb_back_main(call):
 # ╔══════════════════════════════════════════════════════════╗
 #              CALLBACK — АДМИНИСТРАТОР
 # ╚══════════════════════════════════════════════════════════╝
-EXTRA_ADMIN_ALLOWED = {"adm_broadcast", "adm_send_channel", "adm_del_reklam"}
+EXTRA_ADMIN_ALLOWED = {"adm_broadcast", "adm_send_channel", "adm_del_reklam", "adm_code"}
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adm_") and
     (c.from_user.id == ADMIN_ID or is_extra_admin(c.from_user.id)))
@@ -961,32 +1012,28 @@ def admin_callbacks(call):
         bot.answer_callback_query(call.id)
 
     # ── TGrass Güncelle ──────────────────────────────────────────────────────
+    # ── TGrass Güncelle ──────────────────────────────────────────────────────
     elif data == "adm_tgrass_update":
-        try:
-            resp = requests.post(
-                f"{TGRASS_API}/offers",
-                json={"tg_user_id": 0, "tg_login": "test",
-                      "lang": "en", "is_premium": False, "gender": "male"},
-                headers={"Content-Type": "application/json", "Auth": TGRASS_TOKEN},
-                timeout=10
-            )
-            st = "✅ OK" if resp.status_code == 200 else f"❌ HTTP {resp.status_code}"
-        except Exception as e:
-            st = f"❌ {str(e)[:40]}"
-        bot.send_message(call.message.chat.id,
-            f"🔄 <b>TGrass güncellendi!</b>\n\nBağlantı durumu: <b>{st}</b>",
-            reply_markup=build_admin_keyboard())
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, "🔄 TGrass güncelleniyor...")
+        count, msg = tgrass_fetch_channels()
+        if msg == "ok":
+            text = (f"✅ <b>Kanallar TGrass'tan başarıyla çekildi!</b>\n\n"
+                    f"📡 Kanal sayısı: <b>{count}</b>")
+        else:
+            text = (f"❌ <b>TGrass bağlantı hatası!</b>\n\n"
+                    f"Hata: <code>{msg}</code>")
+        bot.send_message(call.message.chat.id, text, reply_markup=build_admin_keyboard())
 
     # ── Добавить/удалить администратора ──────────────────────────────────────
     elif data == "adm_add_admin":
         set_state(call.from_user.id, "adm_add_admin")
         bot.send_message(call.message.chat.id,
             "👤 Admin edilecek kullanıcının ID'sini girin:\n\n"
-            "⚠️ Bu admin sadece şunları yapabilir:\n"
-            "• Kullanıcılara reklam göndermek\n"
-            "• Kanallara post atmak\n"
-            "• Reklam silmek\n\nОтмена: /cancel")
+            "⚠️ Bu admin şunları yapabilir:\n"
+            "• 📢 Kullanıcılara reklam göndermek\n"
+            "• 📡 Kanallara post atmak\n"
+            "• 🗑 Reklam silmek\n"
+            "• 🔑 VPN kodunu değiştirmek\n\nОтмена: /cancel")
         bot.answer_callback_query(call.id)
 
     elif data == "adm_del_admin":
