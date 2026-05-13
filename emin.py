@@ -20,11 +20,7 @@ BOT_TOKEN    = "8361874404:AAFtGTflPuqUJC9zL1oVg90WuJRrDLOQzKY"
 ADMIN_ID     = 6824684800
 REWARD_TMT   = 0.10
 WITHDRAW_MIN = 1.0
-RENDER_URL    = "https://vpn-bot-z9rj.onrender.com"
-
-# TGrass entegrasyonu
-TGRASS_TOKEN  = "02ff4e6e1bcb44a8b0d13de32a6452ae"
-TGRASS_API    = "https://api.tgrass.net/v1"
+RENDER_URL   = "https://vpn-bot-z9rj.onrender.com"
 
 MONGO_URI = (
     "mongodb+srv://emin_saparbayew09:emin.1235.@emin.ri18oi5.mongodb.net"
@@ -229,67 +225,6 @@ def clear_reklamlar():
     col_reklam.delete_many({})
 
 # ╔══════════════════════════════════════════════════════════╗
-#                   TGRASS — API ENTEGRASYONU
-# ╚══════════════════════════════════════════════════════════╝
-def tgrass_get_offers(user):
-    """
-    TGrass resmi API (POST https://tgrass.space/offers)
-    Kullanıcıya özel kanal tekliflerini döndürür.
-    Döküman: tg_user_id + tg_login + lang + is_premium + gender → offers listesi
-    """
-    if get_setting("tgrass", "on") != "on":
-        return []
-    try:
-        payload = {
-            "tg_user_id": user.id,
-            "tg_login":   user.username or "",
-            "lang":       getattr(user, "language_code", "en") or "en",
-            "is_premium": bool(getattr(user, "is_premium", False)),
-            "gender":     "male",
-        }
-        resp = requests.post(
-            TGRASS_API,
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Auth": TGRASS_TOKEN,
-            },
-            timeout=10
-        )
-        if resp.status_code != 200:
-            print(f"[TGrass] HTTP {resp.status_code}: {resp.text[:80]}")
-            return []
-        data = resp.json()
-        if data.get("status") != "ok":
-            print(f"[TGrass] status not ok: {data}")
-            return []
-        offers = data.get("offers", [])
-        print(f"[TGrass] {len(offers)} offer(s) for user {user.id}")
-        return offers
-    except Exception as e:
-        print(f"[TGrass] Error: {e}")
-        return []
-
-def check_tgrass_subscription(user):
-    """
-    TGrass üzerinden abonelik kontrolü.
-    subscribed=False olan kanalları döndürür: [(id, link, name), ...]
-    """
-    if get_setting("tgrass", "on") != "on":
-        return []
-    not_sub = []
-    offers = tgrass_get_offers(user)
-    for offer in offers:
-        if offer.get("type") != "channel":
-            continue
-        if not offer.get("subscribed", True):
-            name = offer.get("name") or "TGrass Kanal"
-            link = offer.get("link") or ""
-            if link:
-                not_sub.append((f"tg_{offer.get('offer_id','')}", link, name))
-    return not_sub
-
-# ╔══════════════════════════════════════════════════════════╗
 #                   FSM (СОСТОЯНИЯ)
 # ╚══════════════════════════════════════════════════════════╝
 user_states = {}
@@ -333,7 +268,7 @@ def check_subs(user_id):
 # ╔══════════════════════════════════════════════════════════╗
 #                   КЛАВИАТУРЫ
 # ╚══════════════════════════════════════════════════════════╝
-def build_main_keyboard(user_id=None, _tgrass_user=None):
+def build_main_keyboard(user_id=None):
     me       = bot.get_me()
     ref_link = f"https://t.me/{me.username}?start={user_id}" if user_id else f"https://t.me/{me.username}"
     share_url = (f"https://t.me/share/url?url={ref_link}"
@@ -351,20 +286,13 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
         InlineKeyboardButton(text=f"✨ {name}", url=link)
         for _, link, name, _ in get_addlist()
     ]
-    # TGrass — offers API'den kullanıcıya özel (abone olmadıkları kanallar)
-    # Not: build_main_keyboard user=None ile çağrılırsa TGrass butonları gözükmez
+    # TGrass
+    tgrass = get_setting("tgrass", "on")
+    tgrass_user = get_setting("tgrass_username", "")
     tgrass_btns = []
-    if _tgrass_user is not None and get_setting("tgrass", "on") == "on":
-        offers = tgrass_get_offers(_tgrass_user)
-        for offer in offers:
-            if offer.get("type") != "channel":
-                continue
-            if not offer.get("subscribed", True):
-                _name = offer.get("name") or "⚙️ TGrass"
-                _link = offer.get("link") or ""
-                if _link:
-                    tgrass_btns.append(InlineKeyboardButton(
-                        text=f"⚙️ {_name}", url=_link))
+    if tgrass == "on" and tgrass_user:
+        tgrass_link = f"https://t.me/{tgrass_user}"
+        tgrass_btns = [InlineKeyboardButton(text="⚙️ TGrass", url=tgrass_link)]
 
     all_btns = sponsor_btns + addlist_btns + tgrass_btns
     if all_btns:
@@ -445,9 +373,19 @@ def cmd_start(message):
 
     is_new = db_add_user(user.id, user.username or user.first_name, referred_by=ref_id)
 
+    # Обновить описание бота
+    threading.Thread(target=_update_description, daemon=True).start()
+
     welcome = get_setting("welcome_text") or "👋 <b>Добро пожаловать!</b>"
     bot.send_message(message.chat.id, welcome,
-                     reply_markup=build_main_keyboard(user.id, _tgrass_user=user))
+                     reply_markup=build_main_keyboard(user.id))
+
+def _update_description():
+    try:
+        total = col_users.count_documents({})
+        bot.set_my_description(f"👥 {total:,} пользователей".replace(",", " "))
+    except Exception:
+        pass
 
 # ╔══════════════════════════════════════════════════════════╗
 #                   /admin
@@ -583,8 +521,6 @@ def cb_check_sub(call):
         return
 
     not_sub = check_subs(user.id)
-    # TGrass kanallarını da kontrol et
-    not_sub += check_tgrass_subscription(user)
 
     if not_sub:
         try:
@@ -697,25 +633,7 @@ def cb_stats(call):
 
 @bot.callback_query_handler(func=lambda c: c.data == "enter_promo")
 def cb_enter_promo(call):
-    user = call.from_user
-    # Abonelik kontrolü — önce tüm kanallara üye olmalı
-    not_sub = check_subs(user.id)
-    not_sub += check_tgrass_subscription(user)
-    if not_sub:
-        try:
-            bot.edit_message_reply_markup(
-                call.message.chat.id, call.message.message_id,
-                reply_markup=build_unsub_keyboard(not_sub)
-            )
-        except Exception:
-            pass
-        bot.answer_callback_query(
-            call.id,
-            "❌ Промокод kullanmak üçin ählisine agza boluň!",
-            show_alert=True
-        )
-        return
-    set_state(user.id, "promo_input")
+    set_state(call.from_user.id, "promo_input")
     bot.send_message(call.message.chat.id,
         "🎟 Введите промокод:\n\n"
         "Или отмените: /cancel")
@@ -725,8 +643,7 @@ def cb_enter_promo(call):
 def cb_back_main(call):
     welcome = get_setting("welcome_text") or "👋 <b>Добро пожаловать!</b>"
     bot.send_message(call.message.chat.id, welcome,
-                     reply_markup=build_main_keyboard(call.from_user.id,
-                                                      _tgrass_user=call.from_user))
+                     reply_markup=build_main_keyboard(call.from_user.id))
     bot.answer_callback_query(call.id)
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -1227,11 +1144,9 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # ╔══════════════════════════════════════════════════════════╗
-
-# ╔══════════════════════════════════════════════════════════╗
 #                        ЗАПУСК
 # ╚══════════════════════════════════════════════════════════╝
 if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=run_bot,   daemon=True).start()
-    run_flask()()
+    run_flask()
