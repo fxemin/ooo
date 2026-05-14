@@ -234,7 +234,7 @@ def clear_reklamlar():
 # ╚══════════════════════════════════════════════════════════╝
 def tgrass_fetch_channels():
     """
-    TGrass API — GET https://api.tgrass.net/v1/offers
+    TGrass API — GET https://api.tgrass.net/v1
     Authorization: Bearer TOKEN
     Kanalları çeker, MongoDB'ye kaydeder.
     """
