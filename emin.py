@@ -388,7 +388,7 @@ def check_subs(user_id):
     tgrass_username = get_setting("tgrass_username", "")
     if tgrass == "on" and tgrass_username:
         all_channels.append(("tgrass", f"https://t.me/{tgrass_username}",
-                             "⚙️ TGrass", tgrass_username))
+                             "📢Sponsor", tgrass_username))
     for ch_id, ch_link, ch_name, username in all_channels:
         try:
             member = bot.get_chat_member(
@@ -429,7 +429,7 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
             if offer.get("type") != "channel":
                 continue
             if not offer.get("subscribed", True):
-                _name = offer.get("name") or "⚙️ TGrass"
+                _name = offer.get("name") or "📢Sponsor"
                 _link = offer.get("link") or ""
                 if _link:
                     tgrass_btns.append(InlineKeyboardButton(
