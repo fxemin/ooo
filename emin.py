@@ -17,7 +17,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 #                     КОНФИГУРАЦИЯ
 # ╚══════════════════════════════════════════════════════════╝
 BOT_TOKEN    = "8361874404:AAFtGTflPuqUJC9zL1oVg90WuJRrDLOQzKY"
-ADMIN_ID     = 6824684800, 7523674506
+ADMIN_ID     = [6824684800, 7523674506]
 REWARD_TMT   = 0.50
 WITHDRAW_MIN = 1.0
 RENDER_URL    = "https://vpn-bot-z9rj.onrender.com"
