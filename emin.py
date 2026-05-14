@@ -266,7 +266,7 @@ def tgrass_fetch_channels():
             link     = (offer.get("link") or offer.get("url") or
                         (f"https://t.me/{username.lstrip('@')}" if username else ""))
             if username and link:
-                _add_ch(col_tgrass_channels, link, name, username)
+                _add_channel(col_tgrass_channels, link, name, username)
                 count += 1
         print(f"[TGrass] Fetched {count} channels")
         return count, "ok"
