@@ -1411,6 +1411,4 @@ def run_flask():
 if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=run_bot,   daemon=True).start()
-    run_flask()ead(target=self_ping, daemon=True).start()
-    threading.Thread(target=run_bot,   daemon=True).start()
-    run_flask()sk()lask()sk()
+    run_flask()
