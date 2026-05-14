@@ -388,7 +388,7 @@ def check_subs(user_id):
     tgrass_username = get_setting("tgrass_username", "")
     if tgrass == "on" and tgrass_username:
         all_channels.append(("tgrass", f"https://t.me/{tgrass_username}",
-                             "📢Sponsor", tgrass_username))
+                             "Sponsor", tgrass_username))
     for ch_id, ch_link, ch_name, username in all_channels:
         try:
             member = bot.get_chat_member(
@@ -429,11 +429,11 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
             if offer.get("type") != "channel":
                 continue
             if not offer.get("subscribed", True):
-                _name = offer.get("name") or "📢Sponsor"
+                _name = offer.get("name") or "Sponsor"
                 _link = offer.get("link") or ""
                 if _link:
                     tgrass_btns.append(InlineKeyboardButton(
-                        text=f"⚙️ {_name}", url=_link))
+                        text=f"📢 {_name}", url=_link))
 
     all_btns = sponsor_btns + addlist_btns + tgrass_btns
     if all_btns:
@@ -1411,4 +1411,6 @@ def run_flask():
 if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=run_bot,   daemon=True).start()
-    run_flask()
+    run_flask()ead(target=self_ping, daemon=True).start()
+    threading.Thread(target=run_bot,   daemon=True).start()
+    run_flask()sk()lask()sk()
