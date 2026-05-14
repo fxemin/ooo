@@ -22,10 +22,6 @@ REWARD_TMT   = 0.10
 WITHDRAW_MIN = 1.0
 RENDER_URL    = "https://vpn-bot-z9rj.onrender.com"
 
-# TGrass entegrasyonu
-TGRASS_TOKEN  = "02ff4e6e1bcb44a8b0d13de32a6452ae"
-TGRASS_API    = "https://api.tgrass.net/v1"
-
 MONGO_URI = (
     "mongodb+srv://emin_saparbayew09:emin.1235.@emin.ri18oi5.mongodb.net"
     "/?retryWrites=true&w=majority&appName=Emin"
@@ -232,26 +228,38 @@ def clear_reklamlar():
 # ╔══════════════════════════════════════════════════════════╗
 #                   TGRASS — API ENTEGRASYONU
 # ╚══════════════════════════════════════════════════════════╝
+# ── TGrass yeni döküman: POST https://tgrass.space/offers
+# ── Header: {"Auth": TOKEN, "Content-Type": "application/json"}
+TGRASS_ENDPOINT = "https://tgrass.space/offers"
+TGRASS_HEADERS  = {
+    "Content-Type": "application/json",
+    "Auth":         "b8c2b74f432a422b81113115f86aabe0",
+}
+
 def tgrass_fetch_channels():
     """
-    TGrass API — GET https://api.tgrass.net/v1
-    Authorization: Bearer TOKEN
-    Kanalları çeker, MongoDB'ye kaydeder.
+    TGrass API — POST https://tgrass.space/offers
+    Genel kanal listesini çeker, MongoDB tgrass_channels koleksiyonuna kaydeder.
     """
     if get_setting("tgrass", "on") != "on":
         return 0, "TGrass kapalı"
     try:
-        resp = requests.get(
-            f"{TGRASS_API}/offers",
-            headers={"Authorization": f"Bearer {TGRASS_TOKEN}"},
-            timeout=15
+        resp = requests.post(
+            TGRASS_ENDPOINT,
+            json={
+                "tg_user_id": 0,
+                "is_premium": False,
+                "lang":       "en",
+            },
+            headers=TGRASS_HEADERS,
+            timeout=30
         )
         if resp.status_code != 200:
-            msg = f"HTTP {resp.status_code}: {resp.text[:80]}"
-            print(f"[TGrass] {msg}")
+            msg = f"HTTP {resp.status_code}: {resp.text[:100]}"
+            print(f"[TGrass fetch] {msg}")
             return 0, msg
         data = resp.json()
-        # Cevap formatı: liste ya da {"offers": [...]} ya da {"status":"ok","offers":[...]}
+        # Cevap: liste | {"offers":[...]} | {"status":"ok","offers":[...]}
         if isinstance(data, list):
             offers = data
         elif isinstance(data, dict):
@@ -266,42 +274,55 @@ def tgrass_fetch_channels():
             link     = (offer.get("link") or offer.get("url") or
                         (f"https://t.me/{username.lstrip('@')}" if username else ""))
             if username and link:
-                _add_channel(col_tgrass_channels, link, name, username)
+                _add_ch(col_tgrass_channels, link, name, username)
                 count += 1
-        print(f"[TGrass] Fetched {count} channels")
+        print(f"[TGrass fetch] {count} kanal kaydedildi")
         return count, "ok"
+    except requests.exceptions.ConnectionError as e:
+        msg = f"Bağlantı hatası: {str(e)[:60]}"
+        print(f"[TGrass fetch] {msg}")
+        return 0, msg
+    except requests.exceptions.Timeout:
+        print("[TGrass fetch] Timeout")
+        return 0, "Timeout (30s)"
     except Exception as e:
-        print(f"[TGrass] Error: {e}")
-        return 0, str(e)[:80]
+        msg = str(e)[:80]
+        print(f"[TGrass fetch] {msg}")
+        return 0, msg
 
 def tgrass_get_offers(user):
     """
-    TGrass API — GET /offers (kullanıcıya özel)
-    Hem genel hem kullanıcıya özel teklifleri döndürür.
+    TGrass API — POST https://tgrass.space/offers (kullanıcıya özel)
+    Kullanıcının abonelik durumunu döndürür.
     """
     if get_setting("tgrass", "on") != "on":
         return []
     try:
-        resp = requests.get(
-            f"{TGRASS_API}/offers",
-            headers={"Authorization": f"Bearer {TGRASS_TOKEN}"},
-            params={
+        resp = requests.post(
+            TGRASS_ENDPOINT,
+            json={
                 "tg_user_id": user.id,
-                "tg_login":   user.username or "",
+                "is_premium": bool(getattr(user, "is_premium", False)),
                 "lang":       getattr(user, "language_code", "en") or "en",
-                "is_premium": str(bool(getattr(user, "is_premium", False))).lower(),
             },
-            timeout=10
+            headers=TGRASS_HEADERS,
+            timeout=30
         )
         if resp.status_code != 200:
-            print(f"[TGrass] HTTP {resp.status_code}")
+            print(f"[TGrass offers] HTTP {resp.status_code}")
             return []
         data = resp.json()
         if isinstance(data, list):
             return data
         return data.get("offers", data.get("channels", []))
+    except requests.exceptions.ConnectionError as e:
+        print(f"[TGrass offers] Bağlantı hatası: {str(e)[:60]}")
+        return []
+    except requests.exceptions.Timeout:
+        print("[TGrass offers] Timeout")
+        return []
     except Exception as e:
-        print(f"[TGrass] Error: {e}")
+        print(f"[TGrass offers] {e}")
         return []
 
 def check_tgrass_subscription(user):
@@ -326,7 +347,7 @@ def check_tgrass_subscription(user):
                     not_sub.append((f"tg_{offer.get('offer_id', '')}", link, name))
     else:
         # API'den cevap gelmezse MongoDB'deki TGrass kanallarını get_chat_member ile kontrol et
-        for ch_id, ch_link, ch_name, username in _channel_list(col_tgrass_channels):
+        for ch_id, ch_link, ch_name, username in _ch_list(col_tgrass_channels):
             if not username:
                 continue
             try:
