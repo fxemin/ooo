@@ -326,7 +326,7 @@ def check_tgrass_subscription(user):
                     not_sub.append((f"tg_{offer.get('offer_id', '')}", link, name))
     else:
         # API'den cevap gelmezse MongoDB'deki TGrass kanallarını get_chat_member ile kontrol et
-        for ch_id, ch_link, ch_name, username in _ch_list(col_tgrass_channels):
+        for ch_id, ch_link, ch_name, username in _channel_list(col_tgrass_channels):
             if not username:
                 continue
             try:
