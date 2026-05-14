@@ -354,6 +354,12 @@ def check_tgrass_subscription(user):
                 m = bot.get_chat_member("@" + username.lstrip("@"), user.id)
                 if m.status in ("left", "kicked", "banned"):
                     not_sub.append((ch_id, ch_link, ch_name))
+            except telebot.apihelper.ApiTelegramException as e:
+                err = str(e).lower()
+                # Bot hesabı veya bulunamayan kanal → atla
+                if "bot" in err or "not found" in err or "chat not found" in err:
+                    continue
+                not_sub.append((ch_id, ch_link, ch_name))
             except Exception:
                 not_sub.append((ch_id, ch_link, ch_name))
     return not_sub
@@ -379,29 +385,24 @@ def get_state(uid):
 #                   ПРОВЕРКА ПОДПИСКИ
 # ╚══════════════════════════════════════════════════════════╝
 def check_subs(user_id):
-    """Возвращает список каналов без подписки [(id, link, name), ...]"""
+    """Список каналов без подписки. Bot hesapları atlanır."""
     not_sub = []
-    all_channels = list(get_sponsors()) + list(get_addlist())
-    tgrass = get_setting("tgrass", "on")
-    # TGrass — если включён, добавляем его для проверки
-    # (в реальности это отдельный канал, хранится в settings)
-    tgrass_username = get_setting("tgrass_username", "")
-    if tgrass == "on" and tgrass_username:
-        all_channels.append(("tgrass", f"https://t.me/{tgrass_username}",
-                             "Sponsor", tgrass_username))
-    for ch_id, ch_link, ch_name, username in all_channels:
+    for ch_id, ch_link, ch_name, username in list(get_sponsors()) + list(get_addlist()):
+        if not username:
+            continue
         try:
-            member = bot.get_chat_member(
-                chat_id="@" + username.lstrip("@"), user_id=user_id)
-            if member.status in ("left", "kicked", "banned"):
+            m = bot.get_chat_member("@" + username.lstrip("@"), user_id)
+            if m.status in ("left", "kicked", "banned"):
                 not_sub.append((ch_id, ch_link, ch_name))
+        except telebot.apihelper.ApiTelegramException as e:
+            err = str(e).lower()
+            # Bot hesabı veya bulunamayan kanal → abonelik sayılmaz, atla
+            if "bot" in err or "not found" in err or "chat not found" in err:
+                continue
+            not_sub.append((ch_id, ch_link, ch_name))
         except Exception:
             not_sub.append((ch_id, ch_link, ch_name))
     return not_sub
-
-# ╔══════════════════════════════════════════════════════════╗
-#                   КЛАВИАТУРЫ
-# ╚══════════════════════════════════════════════════════════╝
 def build_main_keyboard(user_id=None, _tgrass_user=None):
     me       = bot.get_me()
     ref_link = f"https://t.me/{me.username}?start={user_id}" if user_id else f"https://t.me/{me.username}"
@@ -1185,9 +1186,9 @@ def fsm_handler(message):
     if uid != ADMIN_ID and not is_extra_admin(uid):
         clear_state(uid)
         return
-    # Extra admin sadece 3 islemi yapabilir
+    # Extra admin sadece bu işlemleri yapabilir
     if is_extra_admin(uid) and uid != ADMIN_ID:
-        allowed = {"adm_broadcast", "adm_sendch_post"}
+        allowed = {"adm_broadcast", "adm_sendch_post", "adm_code"}
         if state not in allowed:
             clear_state(uid)
             return
@@ -1222,10 +1223,18 @@ def fsm_handler(message):
 
     # ── Изменить VPN код ──────────────────────────────────────────────────────
     elif state == "adm_code":
-        set_setting("vpn_code", (message.text or "").strip())
+        new_vpn = (message.text or "").strip()
+        if not new_vpn:
+            bot.send_message(message.chat.id, "❌ Код boş olamaz!")
+            return
+        set_setting("vpn_code", new_vpn)
         clear_state(uid)
-        bot.send_message(message.chat.id, "✅ VPN-код обновлён!",
-                         reply_markup=build_admin_keyboard())
+        kb = build_extra_admin_kb() if is_extra_admin(uid) and uid != ADMIN_ID else build_admin_keyboard()
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>VPN-код обновлён!</b>\n\n🔑 Yeni kod:\n<code>{new_vpn}</code>",
+            reply_markup=kb
+        )
 
     # ── Создать промокод ──────────────────────────────────────────────────────
     elif state == "adm_promo":
@@ -1404,6 +1413,10 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # ╔══════════════════════════════════════════════════════════╗
+
+# ╔══════════════════════════════════════════════════════════╗
+#                        ЗАПУСК
+# ╚══════════════════════════════════════════════════════════╝
 
 # ╔══════════════════════════════════════════════════════════╗
 #                        ЗАПУСК
