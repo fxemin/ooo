@@ -51,6 +51,7 @@ col_settings = _db["settings"]
 col_reklam   = _db["reklam"]
 col_promo    = _db["promo"]        # Промокоды
 col_tgrass_channels = _db["tgrass_channels"]
+col_post_channels   = _db["post_channels"]   # Рекламный каналы (ручное управление)
 
 col_users.create_index("user_id", unique=True)
 
@@ -104,6 +105,24 @@ def add_addlist(link, name, username):  _add_channel(col_addlist,  link, name, u
 
 def del_sponsor(doc_id): _del_channel(col_sponsors, doc_id)
 def del_addlist(doc_id): _del_channel(col_addlist,  doc_id)
+
+# ── Пост-каналы: добавить/удалить/получить список ──────────────────────────
+def get_post_channels():
+    return list(col_post_channels.find())
+
+def add_post_channel(name, username):
+    uname = username.strip().lstrip("@")
+    col_post_channels.update_one(
+        {"username": uname},
+        {"$set": {"name": name, "username": uname}},
+        upsert=True
+    )
+
+def del_post_channel(doc_id):
+    try:
+        col_post_channels.delete_one({"_id": ObjectId(doc_id)})
+    except Exception:
+        pass
 
 def parse_channel_args(text):
     """'/cmd name @chan' → (name, link, username)"""
@@ -451,6 +470,38 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
     )
     kb.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="enter_promo"))
     return kb
+
+def _show_post_channels_menu(chat_id):
+    """Пост-каналы: список с кнопками Отправить / Удалить + Добавить."""
+    channels = get_post_channels()
+    kb = InlineKeyboardMarkup(row_width=2)
+    if channels:
+        for ch in channels:
+            ch_id  = str(ch["_id"])
+            name   = ch.get("name", "")
+            uname  = ch.get("username", "")
+            # Каждый канал: [📤 Имя @user] [🗑 Удалить]
+            kb.row(
+                InlineKeyboardButton(
+                    text=f"📺 {name} @{uname}",
+                    callback_data=f"pch_send_{ch_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🗑",
+                    callback_data=f"pch_del_{ch_id}"
+                )
+            )
+    kb.row(
+        InlineKeyboardButton(text="🚀 Отправить во все", callback_data="pch_send_all"),
+        InlineKeyboardButton(text="➕ Добавить канал",   callback_data="pch_add"),
+    )
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="adm_back"))
+    total = len(channels)
+    bot.send_message(
+        chat_id,
+        f"📡 <b>Пост-каналы</b>\n\nКаналов в списке: <b>{total}</b>\n\nВыберите канал для отправки или добавьте новый:",
+        reply_markup=kb
+    )
 
 def build_admin_keyboard():
     total, today, _ = db_get_stats()
@@ -807,7 +858,7 @@ def cb_enter_promo(call):
             pass
         bot.answer_callback_query(
             call.id,
-            "❌ Промокод ulanmak üçin hemme kanllara agza boluň!",
+            "❌ Промокод kullanmak üçin ählisine agza boluň!",
             show_alert=True
         )
         return
@@ -828,7 +879,7 @@ def cb_back_main(call):
 # ╔══════════════════════════════════════════════════════════╗
 #              CALLBACK — АДМИНИСТРАТОР
 # ╚══════════════════════════════════════════════════════════╝
-EXTRA_ADMIN_ALLOWED = {"adm_broadcast", "adm_send_channel", "adm_del_reklam", "adm_code"}
+EXTRA_ADMIN_ALLOWED = {"adm_broadcast", "adm_send_channel", "adm_del_reklam", "adm_code", "pch_send_all"}
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adm_") and
     (c.from_user.id == ADMIN_ID or is_extra_admin(c.from_user.id)))
@@ -836,7 +887,7 @@ def admin_callbacks(call):
     data = call.data
     # Extra admin yetki kontrolu
     if call.from_user.id != ADMIN_ID and data not in EXTRA_ADMIN_ALLOWED:
-        bot.answer_callback_query(call.id, "❌ Siz boda admin däl!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Yetkiniz yok!", show_alert=True)
         return
 
     # ── Статистика ──────────────────────────────────────────────────────────────
@@ -940,21 +991,7 @@ def admin_callbacks(call):
 
     # ── В каналы ─────────────────────────────────────────────────────────────
     elif data == "adm_send_channel":
-        all_ch = get_sponsors() + get_addlist()
-        if not all_ch:
-            bot.answer_callback_query(call.id, "Каналов нет!", show_alert=True)
-            return
-        kb = InlineKeyboardMarkup(row_width=1)
-        for ch_id, _, name, uname in all_ch:
-            kb.add(InlineKeyboardButton(
-                text=f"📺 {name}",
-                callback_data=f"sendch_{ch_id}"
-            ))
-        kb.add(InlineKeyboardButton(text="🚀 Во все каналы", callback_data="sendch_all"))
-        kb.add(InlineKeyboardButton(text="🔙 Назад",         callback_data="adm_back"))
-        bot.send_message(call.message.chat.id,
-            "📡 Выберите канал для отправки рекламы:",
-            reply_markup=kb)
+        _show_post_channels_menu(call.message.chat.id)
         bot.answer_callback_query(call.id)
 
     # ── Удалить рекламу ──────────────────────────────────────────────────────
@@ -1036,13 +1073,13 @@ def admin_callbacks(call):
     # ── TGrass Güncelle ──────────────────────────────────────────────────────
     # ── TGrass Güncelle ──────────────────────────────────────────────────────
     elif data == "adm_tgrass_update":
-        bot.answer_callback_query(call.id, "🔄 TGrass обновляется...")
+        bot.answer_callback_query(call.id, "🔄 TGrass güncelleniyor...")
         count, msg = tgrass_fetch_channels()
         if msg == "ok":
-            text = (f"✅ <b>Kanallar TGrass'tan kanllar alyndy!</b>\n\n"
-                    f"📡 Kanal sany: <b>{count}</b>")
+            text = (f"✅ <b>Kanallar TGrass'tan başarıyla çekildi!</b>\n\n"
+                    f"📡 Kanal sayısı: <b>{count}</b>")
         else:
-            text = (f"❌ <b>TGrass çatylmady!</b>\n\n"
+            text = (f"❌ <b>TGrass bağlantı hatası!</b>\n\n"
                     f"Hata: <code>{msg}</code>")
         bot.send_message(call.message.chat.id, text, reply_markup=build_admin_keyboard())
 
@@ -1050,12 +1087,12 @@ def admin_callbacks(call):
     elif data == "adm_add_admin":
         set_state(call.from_user.id, "adm_add_admin")
         bot.send_message(call.message.chat.id,
-            "👤 Admin edilecek adamyň ID ny ýaz:\n\n"
-            "⚠️ Bu admin şulari edip biler:\n"
-            "• 📢 Adamlara habar iberme\n"
-            "• 📡 Kanallara post goýbermek\n"
-            "• 🗑 Reklam pozmak\n"
-            "• 🔑 VPN koduny çalşmak\n\nОтмена: /cancel")
+            "👤 Admin edilecek kullanıcının ID'sini girin:\n\n"
+            "⚠️ Bu admin şunları yapabilir:\n"
+            "• 📢 Kullanıcılara reklam göndermek\n"
+            "• 📡 Kanallara post atmak\n"
+            "• 🗑 Reklam silmek\n"
+            "• 🔑 VPN kodunu değiştirmek\n\nОтмена: /cancel")
         bot.answer_callback_query(call.id)
 
     elif data == "adm_del_admin":
@@ -1085,7 +1122,59 @@ def admin_callbacks(call):
         )
         bot.answer_callback_query(call.id)
 
-# ── Extra admin sil ──────────────────────────────────────────────────────────
+# ── Пост-каналы: добавить / удалить / отправить ───────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pch_") and
+    (c.from_user.id == ADMIN_ID or is_extra_admin(c.from_user.id)))
+def cb_post_channels(call):
+    uid  = call.from_user.id
+    data = call.data
+
+    # ── Добавить канал ────────────────────────────────────────────────────────
+    if data == "pch_add":
+        set_state(uid, "pch_add")
+        bot.send_message(call.message.chat.id,
+            "➕ <b>Добавить пост-канал</b>\n\n"
+            "Введите в формате:\n"
+            "<code>Название @username</code>\n\n"
+            "Например: <code>HAPP_VPN @HAPP_VPN</code>\n\nОтмена: /cancel")
+        bot.answer_callback_query(call.id)
+
+    # ── Удалить канал ─────────────────────────────────────────────────────────
+    elif data.startswith("pch_del_"):
+        ch_id = data[len("pch_del_"):]
+        del_post_channel(ch_id)
+        bot.answer_callback_query(call.id, "✅ Канал удалён!")
+        _show_post_channels_menu(call.message.chat.id)
+
+    # ── Отправить во все ──────────────────────────────────────────────────────
+    elif data == "pch_send_all":
+        channels = get_post_channels()
+        if not channels:
+            bot.answer_callback_query(call.id, "Список пуст! Сначала добавьте каналы.", show_alert=True)
+            return
+        names = ", ".join(f"@{c['username']}" for c in channels)
+        set_state(uid, "pch_send_post", target="all")
+        bot.send_message(call.message.chat.id,
+            f"🚀 <b>Отправить во все каналы</b>\n\n"
+            f"Каналов: <b>{len(channels)}</b>\n{names}\n\n"
+            f"Отправьте рекламный пост (текст, фото, видео — любой тип)\n\nОтмена: /cancel")
+        bot.answer_callback_query(call.id)
+
+    # ── Отправить в один канал ────────────────────────────────────────────────
+    elif data.startswith("pch_send_"):
+        ch_id = data[len("pch_send_"):]
+        ch    = col_post_channels.find_one({"_id": ObjectId(ch_id)})
+        if not ch:
+            bot.answer_callback_query(call.id, "Канал не найден!", show_alert=True)
+            return
+        set_state(uid, "pch_send_post", target=ch_id)
+        bot.send_message(call.message.chat.id,
+            f"📺 <b>@{ch['username']}</b> каналына пост отправьте:\n\n"
+            f"(Текст, фото, видео, кнопки — любой тип)\n\n"
+            "Отмена: /cancel")
+        bot.answer_callback_query(call.id)
+
+# ── Extra admin сил ──────────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data.startswith("del_extra_admin_") and c.from_user.id == ADMIN_ID)
 def cb_del_extra_admin(call):
     adm_id = call.data[len("del_extra_admin_"):]
@@ -1188,7 +1277,7 @@ def fsm_handler(message):
         return
     # Extra admin sadece bu işlemleri yapabilir
     if is_extra_admin(uid) and uid != ADMIN_ID:
-        allowed = {"adm_broadcast", "adm_sendch_post", "adm_code"}
+        allowed = {"adm_broadcast", "adm_sendch_post", "adm_code", "pch_add", "pch_send_post"}
         if state not in allowed:
             clear_state(uid)
             return
@@ -1225,7 +1314,7 @@ def fsm_handler(message):
     elif state == "adm_code":
         new_vpn = (message.text or "").strip()
         if not new_vpn:
-            bot.send_message(message.chat.id, "❌ Код нет!")
+            bot.send_message(message.chat.id, "❌ Код boş olamaz!")
             return
         set_setting("vpn_code", new_vpn)
         clear_state(uid)
@@ -1288,16 +1377,33 @@ def fsm_handler(message):
         )
         bot.send_message(message.chat.id, "Панель:", reply_markup=build_admin_keyboard())
 
-    # ── Отправка в каналы ─────────────────────────────────────────────────────
-    elif state == "adm_sendch_post":
+    # ── Пост-каналы: добавить ────────────────────────────────────────────────
+    elif state == "pch_add":
+        parts = (message.text or "").strip().split(maxsplit=1)
+        if len(parts) < 2:
+            bot.send_message(message.chat.id,
+                "❌ Формат: <code>Название @username</code>\n\nПример: <code>HAPP_VPN @HAPP_VPN</code>")
+            return
+        name  = parts[0].strip()
+        uname = parts[1].strip().lstrip("@")
+        add_post_channel(name, uname)
+        clear_state(uid)
+        bot.send_message(message.chat.id,
+            f"✅ Канал <b>{name}</b> (@{uname}) добавлен!")
+        _show_post_channels_menu(message.chat.id)
+
+    # ── Пост-каналы: отправить ────────────────────────────────────────────────
+    elif state == "pch_send_post":
         d      = user_data.get(uid, {})
         target = d.get("target", "all")
 
-        # Sponsor + Addlist kanallarını al
-        all_ch    = list(get_sponsors()) + list(get_addlist())
-        send_list = all_ch if target == "all" else [c for c in all_ch if c[0] == target]
+        if target == "all":
+            channels = get_post_channels()
+        else:
+            ch = col_post_channels.find_one({"_id": ObjectId(target)})
+            channels = [ch] if ch else []
 
-        if not send_list:
+        if not channels:
             clear_state(uid)
             bot.send_message(message.chat.id, "❌ Каналов нет.",
                              reply_markup=build_admin_keyboard())
@@ -1306,57 +1412,39 @@ def fsm_handler(message):
         markup    = message.reply_markup
         ok        = 0
         fail      = 0
-        skipped   = 0
         fail_list = []
 
         prog = bot.send_message(
             message.chat.id,
-            f"📡 Отправка...\n0 / {len(send_list)}"
+            f"📡 Отправка...\n0 / {len(channels)}"
         )
 
-        bot_id = bot.get_me().id
-
-        for i, (ch_id, ch_link, name, uname) in enumerate(send_list, 1):
-            # Hedef kanalı belirle
-            if uname and uname.strip():
-                tgt = "@" + uname.lstrip("@")
-            elif ch_link and "t.me/" in ch_link:
-                slug = ch_link.split("t.me/")[-1].split("/")[0].split("?")[0]
-                tgt  = "@" + slug if not slug.startswith("-") else slug
-            else:
-                skipped += 1
-                fail_list.append(f"{name}: adres yok")
+        for i, ch in enumerate(channels, 1):
+            tgt = "@" + ch.get("username", "").lstrip("@")
+            if not tgt or tgt == "@":
+                fail += 1
+                fail_list.append(f"{ch.get('name','?')}: адрес отсутствует")
                 continue
-
-            # Yetki kontrolü — bot bu kanalda admin mi?
             try:
-                me_member = bot.get_chat_member(tgt, bot_id)
-                if me_member.status not in ("administrator", "creator"):
-                    skipped += 1
-                    fail_list.append(f"{name}: bot admin değil")
-                    continue
-            except Exception as e:
-                err = str(e).lower()
-                if any(x in err for x in ("bot", "not found", "chat not found", "forbidden")):
-                    skipped += 1
-                    fail_list.append(f"{name}: erişilemiyor")
-                    continue
-                # Hata varsa yine de göndermeyi dene
-
-            # Mesajı gönder
-            try:
-                sent = bot.copy_message(tgt, message.chat.id,
-                                        message.message_id, reply_markup=markup)
+                sent = bot.copy_message(
+                    tgt,
+                    message.chat.id,
+                    message.message_id,
+                    reply_markup=markup
+                )
                 save_reklam(tgt, sent.message_id)
                 ok += 1
+            except telebot.apihelper.ApiTelegramException as e:
+                fail += 1
+                fail_list.append(f"{ch.get('name','?')} ({tgt}): {str(e)[:60]}")
             except Exception as e:
                 fail += 1
-                fail_list.append(f"{name}: {str(e)[:50]}")
+                fail_list.append(f"{ch.get('name','?')} ({tgt}): {str(e)[:60]}")
 
-            if i % 5 == 0 or i == len(send_list):
+            if i % 5 == 0 or i == len(channels):
                 try:
                     bot.edit_message_text(
-                        f"📡 Отправка...\n{i} / {len(send_list)}",
+                        f"📡 Отправка...\n{i} / {len(channels)}",
                         message.chat.id, prog.message_id)
                 except Exception:
                     pass
@@ -1366,21 +1454,65 @@ def fsm_handler(message):
         clear_state(uid)
         bot.edit_message_text(
             f"✅ <b>Отправка завершена!</b>\n\n"
-            f"📡 Jemi: <b>{len(send_list)}</b>\n"
-            f"✔️ Başarılı: <b>{ok}</b>\n"
-            f"⏭ Geçilen (yetki yok): <b>{skipped}</b>\n"
-            f"❌ Ошибки: <b>{fail}</b>{fail_txt}",
+            f"📡 Каналов: <b>{len(channels)}</b>\n"
+            f"✔️ Успешно: <b>{ok}</b>\n"
+            f"❌ Ошибок: <b>{fail}</b>{fail_txt}",
             message.chat.id, prog.message_id, parse_mode="HTML"
         )
         kb = build_extra_admin_kb() if is_extra_admin(uid) and uid != ADMIN_ID else build_admin_keyboard()
         bot.send_message(message.chat.id, "Панель:", reply_markup=kb)
+
+    # ── Отправка в каналы (старая система) ───────────────────────────────────
+    elif state == "adm_sendch_post":
+        d      = user_data.get(uid, {})
+        target = d.get("target", "all")
+        all_ch = list(get_sponsors()) + list(get_addlist())
+        send_list = all_ch if target == "all" else [c for c in all_ch if c[0] == target]
+        if not send_list:
+            clear_state(uid)
+            bot.send_message(message.chat.id, "❌ Каналов нет.",
+                             reply_markup=build_admin_keyboard())
+            return
+        markup = message.reply_markup
+        ok = fail = 0
+        fail_list = []
+        prog = bot.send_message(message.chat.id,
+                                f"📡 Отправка...\n0 / {len(send_list)}")
+        for i, (ch_id, ch_link, name, uname) in enumerate(send_list, 1):
+            tgt = "@" + uname.lstrip("@")
+            try:
+                sent = bot.copy_message(tgt, message.chat.id, message.message_id,
+                                        reply_markup=markup)
+                save_reklam(tgt, sent.message_id)
+                ok += 1
+            except Exception as e:
+                fail += 1
+                fail_list.append(f"{name}: {str(e)[:40]}")
+            if i % 5 == 0 or i == len(send_list):
+                try:
+                    bot.edit_message_text(
+                        f"📡 Отправка...\n{i} / {len(send_list)}",
+                        message.chat.id, prog.message_id)
+                except Exception:
+                    pass
+            time.sleep(0.3)
+        fail_txt = ("\n\n❌ Ошибки:\n" + "\n".join(f"• {f}" for f in fail_list)) if fail_list else ""
+        clear_state(uid)
+        bot.edit_message_text(
+            f"✅ <b>Отправка завершена!</b>\n\n"
+            f"📡 Каналов: <b>{len(send_list)}</b>\n"
+            f"✔️ Успешно: <b>{ok}</b>\n"
+            f"❌ Ошибок: <b>{fail}</b>{fail_txt}",
+            message.chat.id, prog.message_id, parse_mode="HTML"
+        )
+        bot.send_message(message.chat.id, "Панель:", reply_markup=build_admin_keyboard())
 
     # ── Admin ekleme ─────────────────────────────────────────────────────────
     elif state == "adm_add_admin":
         try:
             new_adm_id = int((message.text or "").strip())
         except ValueError:
-            bot.send_message(message.chat.id, "❌ Ошибки ID!"); return
+            bot.send_message(message.chat.id, "❌ Geçersiz ID!"); return
         # Extra admin kaydet (sadece broadcast + kanal post + reklam silme)
         try:
             adm_user = bot.get_chat(new_adm_id)
@@ -1398,7 +1530,7 @@ def fsm_handler(message):
             f"Yetkileri: Рассылка, Пост в каналы, Удалить рекламу",
             reply_markup=build_admin_keyboard())
         try:
-            bot.send_message(new_adm_id, "🎉 Boda admin bolduňuz!\n/admin ýazyp ulanyp bilersiňiz")
+            bot.send_message(new_adm_id, "🎉 Admin yetkiniz verildi!\n/admin komutunu kullanabilirsiniz.")
         except Exception:
             pass
 
