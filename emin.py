@@ -17,11 +17,11 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 BOT_TOKEN    = "8361874404:AAFtGTflPuqUJC9zL1oVg90WuJRrDLOQzKY"
 ADMIN_ID     = 6824684800
 RENDER_URL   = "https://vpn-bot-z9rj.onrender.com"
-TGRASS_TOKEN = "02ff4e6e1bcb44a8b0d13de32a6452ae"
+TGRASS_TOKEN = "b8c2b74f432a422b81113115f86aabe0"
 TGRASS_ENDPOINT = "https://tgrass.space/offers"
 TGRASS_HEADERS  = {
     "Content-Type": "application/json",
-    "Auth": "02ff4e6e1bcb44a8b0d13de32a6452ae",
+    "Auth": "b8c2b74f432a422b81113115f86aabe0",
 }
 MONGO_URI = (
     "mongodb+srv://emin_saparbayew09:emin.1235.@emin.ri18oi5.mongodb.net"
