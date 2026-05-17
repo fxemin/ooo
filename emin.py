@@ -502,7 +502,7 @@ def cb_check_sub(call):
     tgrass = get_setting("tgrass", "on")
     tg_user = get_setting("tgrass_username", "")
     if tgrass == "on" and tg_user:
-        all_ch.append(("tg", f"https://t.me/{tg_user}", "⚙️ TGrass", tg_user))
+        all_ch.append(("tg", f"https://t.me/{tg_user}", "📢Sponsor", tg_user))
 
     if not all_ch:
         bot.answer_callback_query(call.id, "⚠️ Каналов ещё нет!", show_alert=True)
