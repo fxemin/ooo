@@ -684,7 +684,7 @@ def admin_callbacks(call):
             )
             tg_user = get_setting("tgrass_username", "—")
             bot.send_message(call.message.chat.id,
-                f"⚙️ <b>TGrass</b>\n\n"
+                f"📢 <b>Sponsor</b>\n\n"
                 f"Статус: ✅ Включен\n"
                 f"Канал: @{tg_user}",
                 reply_markup=kb)
