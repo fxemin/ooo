@@ -341,9 +341,9 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
         for offer in offers:
             if not offer.get("subscribed", True):
                 lnk = offer.get("link") or offer.get("url") or ""
-                nm  = offer.get("name") or "TGrass"
+                nm  = offer.get("name") or "Sponsor"
                 if lnk:
-                    tg_btns.append(InlineKeyboardButton(text=f"⚙️ {nm}", url=lnk))
+                    tg_btns.append(InlineKeyboardButton(text=f"📢 {nm}", url=lnk))
     all_btns = sp_btns + al_btns + tg_btns
     if all_btns:
         kb.add(*all_btns)
