@@ -3,13 +3,416 @@ import threading
 import time
 import os
 import requests
-import datetime
 import certifi
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from bson import ObjectId
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ╔══════════════════════════════════════════════════════════╗
+#                     КОНФИГУРАЦИЯ
+# ╚══════════════════════════════════════════════════════════╝
+BOT_TOKEN    = "8361874404:AAFtGTflPuqUJC9zL1oVg90WuJRrDLOQzKY"
+ADMIN_ID     = 6824684800
+RENDER_URL   = "https://vpn-bot-z9rj.onrender.com"
+TGRASS_TOKEN = "02ff4e6e1bcb44a8b0d13de32a6452ae"
+TGRASS_ENDPOINT = "https://tgrass.space/offers"
+TGRASS_HEADERS  = {
+    "Content-Type": "application/json",
+    "Auth": "02ff4e6e1bcb44a8b0d13de32a6452ae",
+}
+MONGO_URI = (
+    "mongodb+srv://emin_saparbayew09:emin.1235.@emin.ri18oi5.mongodb.net"
+    "/?retryWrites=true&w=majority&appName=Emin"
+)
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+# ╔══════════════════════════════════════════════════════════╗
+#                      MONGODB
+# ╚══════════════════════════════════════════════════════════╝
+_client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=10000)
+try:
+    _client.admin.command("ping")
+    print("MongoDB OK")
+except ConnectionFailure:
+    print("MongoDB FAIL")
+
+_db               = _client["bot_data"]
+col_users         = _db["users"]
+col_sponsors      = _db["sponsors"]
+col_addlist       = _db["addlist"]
+col_settings      = _db["settings"]
+col_reklam        = _db["reklam"]
+col_tgrass_ch     = _db["tgrass_channels"]
+col_post_channels = _db["post_channels"]
+
+col_users.create_index("user_id", unique=True)
+
+# ╔══════════════════════════════════════════════════════════╗
+#                      FSM
+# ╚══════════════════════════════════════════════════════════╝
+_states   = {}
+user_data = {}
+
+def set_state(uid, state, **kw):
+    _states[uid]   = state
+    user_data[uid] = kw
+
+def clear_state(uid):
+    _states.pop(uid, None)
+    user_data.pop(uid, None)
+
+def get_state(uid):
+    return _states.get(uid)
+
+# ╔══════════════════════════════════════════════════════════╗
+#                    НАСТРОЙКИ
+# ╚══════════════════════════════════════════════════════════╝
+def get_setting(key, default=""):
+    doc = col_settings.find_one({"key": key})
+    return doc["value"] if doc else default
+
+def set_setting(key, value):
+    col_settings.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
+
+for _k, _v in [
+    ("vpn_code",      "SHADOWVIP-2024"),
+    ("tgrass",        "on"),
+    ("tgrass_username", ""),
+    ("welcome_text",
+     "👋 <b>Salam, bota hoş geldiňiz!</b>\n\n"
+     "VPN kodyny almak üçin aşakdaky kanallara agza boluň 👇"),
+]:
+    if not get_setting(_k):
+        set_setting(_k, _v)
+
+# ╔══════════════════════════════════════════════════════════╗
+#                 ПОЛЬЗОВАТЕЛИ
+# ╚══════════════════════════════════════════════════════════╝
+def db_add_user(user_id, username):
+    if col_users.find_one({"user_id": user_id}):
+        return False
+    col_users.insert_one({
+        "user_id":   user_id,
+        "username":  username or "",
+        "join_date": datetime.now(timezone.utc).isoformat(),
+    })
+    return True
+
+def db_get_all_users():
+    return [d["user_id"] for d in col_users.find({}, {"user_id": 1})]
+
+def db_get_stats():
+    now    = datetime.now(timezone.utc)
+    d1_ago = (now - timedelta(days=1)).isoformat()
+    d7_ago = (now - timedelta(days=7)).isoformat()
+    total  = col_users.count_documents({})
+    today  = col_users.count_documents({"join_date": {"$gte": d1_ago}})
+    week   = col_users.count_documents({"join_date": {"$gte": d7_ago}})
+    return total, today, week
+
+def db_get_growth():
+    now = datetime.now(timezone.utc)
+    res = []
+    for i in range(6, -1, -1):
+        ds = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+        de = ds + timedelta(days=1)
+        c  = col_users.count_documents({
+            "join_date": {"$gte": ds.isoformat(), "$lt": de.isoformat()}
+        })
+        res.append((ds.strftime("%d.%m"), c))
+    return res
+
+# ╔══════════════════════════════════════════════════════════╗
+#                  КАНАЛЫ — СПОНСОР / ADDLIST
+# ╚══════════════════════════════════════════════════════════╝
+def _ch_list(col):
+    return [(str(d["_id"]), d.get("link",""), d.get("name",""), d.get("username",""))
+            for d in col.find()]
+
+def _add_ch(col, link, name, username):
+    u = username.strip().lstrip("@")
+    col.update_one({"username": u},
+                   {"$set": {"link": link, "name": name, "username": u}}, upsert=True)
+
+def _del_ch(col, doc_id):
+    try: col.delete_one({"_id": ObjectId(doc_id)})
+    except Exception: pass
+
+def get_sponsors():    return _ch_list(col_sponsors)
+def get_addlist():     return _ch_list(col_addlist)
+def add_sponsor(l,n,u):  _add_ch(col_sponsors, l, n, u)
+def add_addlist(l,n,u):  _add_ch(col_addlist,  l, n, u)
+def del_sponsor(i):    _del_ch(col_sponsors, i)
+def del_addlist(i):    _del_ch(col_addlist,  i)
+
+def parse_channel_args(text):
+    parts = text.strip().split(maxsplit=2)
+    if len(parts) < 3:
+        return None, None, None
+    name, raw = parts[1], parts[2].strip()
+    if raw.startswith("@"):
+        return name, "https://t.me/" + raw.lstrip("@"), raw
+    if "t.me/" in raw:
+        u = "@" + raw.split("t.me/")[-1].split("/")[0]
+        return name, raw, u
+    return name, "https://t.me/" + raw, "@" + raw
+
+# ╔══════════════════════════════════════════════════════════╗
+#                  ПОСТ-КАНАЛЫ
+# ╚══════════════════════════════════════════════════════════╝
+def get_post_channels():
+    return list(col_post_channels.find())
+
+def add_post_channel(name, username):
+    u = username.strip().lstrip("@")
+    col_post_channels.update_one({"username": u},
+                                 {"$set": {"name": name, "username": u}}, upsert=True)
+
+def del_post_channel(doc_id):
+    try: col_post_channels.delete_one({"_id": ObjectId(doc_id)})
+    except Exception: pass
+
+# ╔══════════════════════════════════════════════════════════╗
+#                    РЕКЛАМА
+# ╚══════════════════════════════════════════════════════════╝
+def save_reklam(chat_id, msg_id):
+    col_reklam.insert_one({"chat_id": str(chat_id), "message_id": msg_id})
+
+def get_reklamlar():
+    return [(d["chat_id"], d["message_id"]) for d in col_reklam.find()]
+
+def clear_reklamlar():
+    col_reklam.delete_many({})
+
+# ╔══════════════════════════════════════════════════════════╗
+#                  ADMIN YETKİ
+# ╚══════════════════════════════════════════════════════════╝
+def is_extra_admin(uid):
+    return bool(col_settings.find_one({"key": f"extra_admin_{uid}"}))
+
+# ╔══════════════════════════════════════════════════════════╗
+#                  TGRASS
+# ╚══════════════════════════════════════════════════════════╝
+def tgrass_get_offers(user):
+    if get_setting("tgrass", "on") != "on":
+        return []
+    try:
+        resp = requests.post(
+            TGRASS_ENDPOINT,
+            json={
+                "tg_user_id": user.id,
+                "is_premium": bool(getattr(user, "is_premium", False)),
+                "lang":       getattr(user, "language_code", "en") or "en",
+            },
+            headers=TGRASS_HEADERS,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get("offers", data.get("channels", []))
+    except Exception as e:
+        print(f"[TGrass] {e}")
+        return []
+
+def tgrass_fetch_channels():
+    if get_setting("tgrass", "on") != "on":
+        return 0, "TGrass kapalı"
+    try:
+        resp = requests.post(
+            TGRASS_ENDPOINT,
+            json={"tg_user_id": 0, "is_premium": False, "lang": "en"},
+            headers=TGRASS_HEADERS,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return 0, f"HTTP {resp.status_code}"
+        data = resp.json()
+        offers = data if isinstance(data, list) else data.get("offers", data.get("channels", []))
+        count = 0
+        for offer in offers:
+            uname = (offer.get("username") or offer.get("login") or "")
+            name  = (offer.get("name") or offer.get("title") or uname)
+            link  = (offer.get("link") or offer.get("url") or
+                     (f"https://t.me/{uname.lstrip('@')}" if uname else ""))
+            if uname and link:
+                _add_ch(col_tgrass_ch, link, name, uname)
+                count += 1
+        return count, "ok"
+    except Exception as e:
+        return 0, str(e)[:80]
+
+def check_tgrass_subscription(user):
+    if get_setting("tgrass", "on") != "on":
+        return []
+    not_sub = []
+    offers = tgrass_get_offers(user)
+    if offers:
+        for offer in offers:
+            if not offer.get("subscribed", True):
+                name = offer.get("name") or "TGrass"
+                link = offer.get("link") or offer.get("url") or ""
+                if link:
+                    not_sub.append((f"tg_{offer.get('offer_id','')}", link, name))
+    else:
+        for ch_id, ch_link, ch_name, uname in _ch_list(col_tgrass_ch):
+            if not uname:
+                continue
+            try:
+                m = bot.get_chat_member("@" + uname.lstrip("@"), user.id)
+                if m.status in ("left", "kicked", "banned"):
+                    not_sub.append((ch_id, ch_link, ch_name))
+            except telebot.apihelper.ApiTelegramException as e:
+                if any(x in str(e).lower() for x in ("bot", "not found", "chat not found")):
+                    continue
+                not_sub.append((ch_id, ch_link, ch_name))
+            except Exception:
+                not_sub.append((ch_id, ch_link, ch_name))
+    return not_sub
+
+def check_subs(user_id):
+    not_sub = []
+    for ch_id, ch_link, ch_name, uname in list(get_sponsors()) + list(get_addlist()):
+        if not uname:
+            continue
+        try:
+            m = bot.get_chat_member("@" + uname.lstrip("@"), user_id)
+            if m.status in ("left", "kicked", "banned"):
+                not_sub.append((ch_id, ch_link, ch_name))
+        except telebot.apihelper.ApiTelegramException as e:
+            if any(x in str(e).lower() for x in ("bot", "not found", "chat not found")):
+                continue
+            not_sub.append((ch_id, ch_link, ch_name))
+        except Exception:
+            not_sub.append((ch_id, ch_link, ch_name))
+    return not_sub
+
+# ╔══════════════════════════════════════════════════════════╗
+#                   КЛАВИАТУРЫ
+# ╚══════════════════════════════════════════════════════════╝
+def build_main_keyboard(user_id=None, _tgrass_user=None):
+    kb      = InlineKeyboardMarkup(row_width=2)
+    sp_btns = [InlineKeyboardButton(text=f"🌟 {n}", url=l) for _, l, n, _ in get_sponsors()]
+    al_btns = [InlineKeyboardButton(text=f"✨ {n}", url=l) for _, l, n, _ in get_addlist()]
+    tg_btns = []
+    if _tgrass_user and get_setting("tgrass","on") == "on":
+        offers = tgrass_get_offers(_tgrass_user)
+        for offer in offers:
+            if not offer.get("subscribed", True):
+                lnk = offer.get("link") or offer.get("url") or ""
+                nm  = offer.get("name") or "TGrass"
+                if lnk:
+                    tg_btns.append(InlineKeyboardButton(text=f"⚙️ {nm}", url=lnk))
+    all_btns = sp_btns + al_btns + tg_btns
+    if all_btns:
+        kb.add(*all_btns)
+    kb.row(InlineKeyboardButton(text="✅ Agza boldum", callback_data="check_sub"))
+    return kb
+
+def build_unsub_keyboard(not_sub):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(*[InlineKeyboardButton(text=n, url=l) for _, l, n in not_sub])
+    kb.row(InlineKeyboardButton(text="✅ Agza boldum", callback_data="check_sub"))
+    return kb
+
+def build_admin_keyboard():
+    total, today, _ = db_get_stats()
+    tgrass  = get_setting("tgrass", "on")
+    tg_icon = "✅" if tgrass == "on" else "❌"
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(InlineKeyboardButton(
+        text=f"🏁 Польз: {total} (сег. +{today})", callback_data="adm_stats"))
+    kb.row(
+        InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm_broadcast"),
+        InlineKeyboardButton(text="📡 Пост в каналы", callback_data="adm_send_channel"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="🔑 Изменить VPN",  callback_data="adm_code"),
+        InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="➕ Спонсор",       callback_data="adm_add_sponsor"),
+        InlineKeyboardButton(text="🗑 Спонсор",       callback_data="adm_del_sponsor"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="➕ Addlist",       callback_data="adm_add_addlist"),
+        InlineKeyboardButton(text="🗑 Addlist",       callback_data="adm_del_addlist"),
+    )
+    kb.row(
+        InlineKeyboardButton(text=f"⚙️ TGrass {tg_icon}", callback_data="adm_tgrass"),
+        InlineKeyboardButton(text="🔄 Обновить TGrass",    callback_data="adm_tgrass_update"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="👤 Добавить адм.",  callback_data="adm_add_admin"),
+        InlineKeyboardButton(text="👤 Удалить адм.",   callback_data="adm_del_admin"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="📈 График",         callback_data="adm_growth"),
+        InlineKeyboardButton(text="✏️ Приветствие",    callback_data="adm_welcome"),
+    )
+    return kb
+
+def build_extra_admin_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm_broadcast"),
+        InlineKeyboardButton(text="📡 Пост в каналы", callback_data="adm_send_channel"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="🗑 Удалить рекл.", callback_data="adm_del_reklam"),
+        InlineKeyboardButton(text="🔑 Изменить VPN",  callback_data="adm_code"),
+    )
+    return kb
+
+def _show_post_channels_menu(chat_id):
+    channels = get_post_channels()
+    kb = InlineKeyboardMarkup(row_width=2)
+    for ch in channels:
+        ch_id = str(ch["_id"])
+        name  = ch.get("name","")
+        uname = ch.get("username","")
+        kb.row(
+            InlineKeyboardButton(text=f"📺 {name} @{uname}", callback_data=f"pch_send_{ch_id}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"pch_del_{ch_id}"),
+        )
+    kb.row(
+        InlineKeyboardButton(text="🚀 Отправить во все", callback_data="pch_send_all"),
+        InlineKeyboardButton(text="➕ Добавить канал",   callback_data="pch_add"),
+    )
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="adm_back"))
+    bot.send_message(
+        chat_id,
+        f"📡 <b>Пост-каналы</b>\n\nКаналов: <b>{len(channels)}</b>\n\nВыберите канал:",
+        reply_markup=kb
+    )
+
+# ╔══════════════════════════════════════════════════════════╗
+#                       /start
+# ╚══════════════════════════════════════════════════════════╝
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
+    u   = message.from_user
+    arg = message.text.split(maxsplit=1)
+    db_add_user(u.id, u.username or u.first_name or "")
+    welcome = get_setting("welcome_text")
+    bot.send_message(message.chat.id, welcome,
+                     reply_markup=build_main_keyboard(user_id=u.id, _tgrass_user=u))
+
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    uid = message.from_user.id
+    if uid == ADMIN_ID:
+        bot.send_message(message.chat.id, "⚙️ <b>Панель администратора</b>",
+                         reply_markup=build_admin_keyboard())
+    elif is_extra_admin(uid):
+        bot.send_message(message.chat.id, "⚙️ <b>Панель администратора</b>",
+                         reply_markup=build_extra_admin_kb())
 
 # ╔══════════════════════════════════════════════════════════╗
 #          АДМИН КОМАНДЫ (/add_sponsor, /add_addlist, etc.)
@@ -136,6 +539,7 @@ def admin_callbacks(call):
             f"⚙️ TGRASS: <b>{tg_status}</b>",
             reply_markup=kb
         )
+        bot.answer_callback_query(call.id)
 
     # ── Добавить спонсора ──────────────────────────────────────────────────────
     elif data == "adm_add_sponsor":
@@ -289,15 +693,14 @@ def admin_callbacks(call):
         bot.answer_callback_query(call.id)
 
     # ── TGrass Güncelle ──────────────────────────────────────────────────────
-    # ── TGrass Güncelle ──────────────────────────────────────────────────────
     elif data == "adm_tgrass_update":
-        bot.answer_callback_query(call.id, "🔄 TGrass täzelenyär...")
+        bot.answer_callback_query(call.id, "🔄 TGrass täzelendi...")
         count, msg = tgrass_fetch_channels()
         if msg == "ok":
-            text = (f"✅ <b>Kanallar TGrass'dan alyndy!!</b>\n\n"
-                    f"📡 Kanal sany: <b>{count}</b>")
+            text = (f"✅ <b>Kanallar TGrass'tan alyndy!</b>\n\n"
+                    f"📡 Kanal sayısı: <b>{count}</b>")
         else:
-            text = (f"❌ <b>TGrass da ýalňyşlyk boldy!</b>\n\n"
+            text = (f"❌ <b>TGrass bağlantı hatası!</b>\n\n"
                     f"Hata: <code>{msg}</code>")
         bot.send_message(call.message.chat.id, text, reply_markup=build_admin_keyboard())
 
@@ -309,7 +712,7 @@ def admin_callbacks(call):
             "⚠️ Bu admin şulary edip biler:\n"
             "• 📢 Body ulanyanlara habar ibermek\n"
             "• 📡 Kanallara post ibermek\n"
-            "• 🗑 Reklam pozmak\n"
+            "• 🗑 Reklamany pozmak\n"
             "• 🔑 VPN koduny çalşmak\n\nОтмена: /cancel")
         bot.answer_callback_query(call.id)
 
@@ -706,11 +1109,11 @@ def fsm_handler(message):
         )
         clear_state(uid)
         bot.send_message(message.chat.id,
-            f"✅ <b>{adm_name}</b> admin edildi!\n\n"
-            f"Edip bilýan zatlary: Рассылка, Пост в каналы, Удалить рекламу",
+            f"✅ <b>{adm_name}</b> admin yapıldı!\n\n"
+            f"Yetkileri: Рассылка, Пост в каналы, Удалить рекламу",
             reply_markup=build_admin_keyboard())
         try:
-            bot.send_message(new_adm_id, "🎉 Admin edildiňiz!\n/admin ýazyp bilersiňiz.")
+            bot.send_message(new_adm_id, "🎉 Boda admin edildiňiz!\n/admin ýazyp bilersiňiz.")
         except Exception:
             pass
 
@@ -765,12 +1168,6 @@ def run_bot():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-# ╔══════════════════════════════════════════════════════════╗
-
-# ╔══════════════════════════════════════════════════════════╗
-#                        ЗАПУСК
-# ╚══════════════════════════════════════════════════════════╝
 
 # ╔══════════════════════════════════════════════════════════╗
 #                        ЗАПУСК
