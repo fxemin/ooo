@@ -340,10 +340,11 @@ def build_main_keyboard(user_id=None, _tgrass_user=None):
         offers = tgrass_get_offers(_tgrass_user)
         for offer in offers:
             if not offer.get("subscribed", True):
-                lnk = offer.get("link") or offer.get("url") or ""
-                nm  = offer.get("name") or "Sponsor"
+                lnk   = offer.get("link") or offer.get("url") or ""
+                uname = (offer.get("username") or offer.get("login") or "").lstrip("@")
+                nm    = offer.get("name") or offer.get("title") or (f"📢 @{uname}" if uname else "📢 Sponsor")
                 if lnk:
-                    tg_btns.append(InlineKeyboardButton(text=f"📢 {nm}", url=lnk))
+                    tg_btns.append(InlineKeyboardButton(text=nm, url=lnk))
     all_btns = sp_btns + al_btns + tg_btns
     if all_btns:
         kb.add(*all_btns)
@@ -502,7 +503,7 @@ def cb_check_sub(call):
     tgrass = get_setting("tgrass", "on")
     tg_user = get_setting("tgrass_username", "")
     if tgrass == "on" and tg_user:
-        all_ch.append(("tg", f"https://t.me/{tg_user}", "📢Sponsor", tg_user))
+        all_ch.append(("tg", f"https://t.me/{tg_user}", "⚙️ TGrass", tg_user))
 
     if not all_ch:
         bot.answer_callback_query(call.id, "⚠️ Каналов ещё нет!", show_alert=True)
@@ -552,7 +553,7 @@ def admin_callbacks(call):
     data = call.data
     # Extra admin yetki kontrolu
     if call.from_user.id != ADMIN_ID and data not in EXTRA_ADMIN_ALLOWED:
-        bot.answer_callback_query(call.id, "❌ Yetkiniz yok!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Siz admin däl!", show_alert=True)
         return
 
     # ── Статистика ──────────────────────────────────────────────────────────────
@@ -684,7 +685,7 @@ def admin_callbacks(call):
             )
             tg_user = get_setting("tgrass_username", "—")
             bot.send_message(call.message.chat.id,
-                f"📢 <b>Sponsor</b>\n\n"
+                f"⚙️ <b>TGrass</b>\n\n"
                 f"Статус: ✅ Включен\n"
                 f"Канал: @{tg_user}",
                 reply_markup=kb)
@@ -729,10 +730,10 @@ def admin_callbacks(call):
 
     # ── TGrass Güncelle ──────────────────────────────────────────────────────
     elif data == "adm_tgrass_update":
-        bot.answer_callback_query(call.id, "🔄 TGrass täzelendi...")
+        bot.answer_callback_query(call.id, "🔄 TGrass täzelenýär...")
         count, msg = tgrass_fetch_channels()
         if msg == "ok":
-            text = (f"✅ <b>Kanallar TGrass'tan alyndy!</b>\n\n"
+            text = (f"✅ <b>Kanallar TGrass'dan alyndy!</b>\n\n"
                     f"📡 Kanal sayısı: <b>{count}</b>")
         else:
             text = (f"❌ <b>TGrass bağlantı hatası!</b>\n\n"
@@ -744,10 +745,10 @@ def admin_callbacks(call):
         set_state(call.from_user.id, "adm_add_admin")
         bot.send_message(call.message.chat.id,
             "👤 Admin edilecek adamyň ID'ini ýazyň:\n\n"
-            "⚠️ Bu admin şulary edip biler:\n"
-            "• 📢 Body ulanyanlara habar ibermek\n"
+            "⚠️ Bu admin şunlary edip biler:\n"
+            "• 📢 Body ulanýanlara reklama ibermek\n"
             "• 📡 Kanallara post ibermek\n"
-            "• 🗑 Reklamany pozmak\n"
+            "• 🗑 Reklam pozmak\n"
             "• 🔑 VPN koduny çalşmak\n\nОтмена: /cancel")
         bot.answer_callback_query(call.id)
 
@@ -960,7 +961,7 @@ def fsm_handler(message):
         kb = build_extra_admin_kb() if is_extra_admin(uid) and uid != ADMIN_ID else build_admin_keyboard()
         bot.send_message(
             message.chat.id,
-            f"✅ <b>VPN-код обновлён!</b>\n\n🔑 Täze kod:\n<code>{new_vpn}</code>",
+            f"✅ <b>VPN-код обновлён!</b>\n\n🔑 Yeni kod:\n<code>{new_vpn}</code>",
             reply_markup=kb
         )
 
@@ -1130,7 +1131,7 @@ def fsm_handler(message):
         try:
             new_adm_id = int((message.text or "").strip())
         except ValueError:
-            bot.send_message(message.chat.id, "❌ Ýalňyş ID!"); return
+            bot.send_message(message.chat.id, "❌ Geçersiz ID!"); return
         # Extra admin kaydet (sadece broadcast + kanal post + reklam silme)
         try:
             adm_user = bot.get_chat(new_adm_id)
@@ -1148,7 +1149,7 @@ def fsm_handler(message):
             f"Yetkileri: Рассылка, Пост в каналы, Удалить рекламу",
             reply_markup=build_admin_keyboard())
         try:
-            bot.send_message(new_adm_id, "🎉 Boda admin edildiňiz!\n/admin ýazyp bilersiňiz.")
+            bot.send_message(new_adm_id, "🎉 Siz boda admin edildiňiz!\n/admin ýazyp bilersiňiz.")
         except Exception:
             pass
 
