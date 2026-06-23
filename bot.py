@@ -21,11 +21,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Botuň sazlamalary
-BOT_TOKEN = '8907195855:AAG4nSimgB7KygoRMmG4FfqESaBVWLdgi6E'
+BOT_TOKEN = '8361874404:AAF_Jfni7-SFfwFnlVGMNMHO9wQhALpi8Lk'
 ADMIN_IDS = [6824684800]
 
 # TGRASS
-TGRASS_API_KEY = "d88656208ad34b4ba73173bd0e0bff41"
+TGRASS_API_KEY = "b8c2b74f432a422b81113115f86aabe0"
 TGRASS_API_URL = "https://tgrass.space/offers"
 
 # bot
