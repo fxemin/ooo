@@ -483,7 +483,7 @@ async def show_post_channels_menu(chat_id: int, message_id: int):
                     callback_data=f"pch_send_{ch_id}"
                 ),
                 InlineKeyboardButton(
-                    text="",
+                    text="🗑",
                     callback_data=f"pch_del_{ch_id}"
                 )
             )
@@ -516,6 +516,54 @@ async def show_post_channels_menu(chat_id: int, message_id: int):
         message_id=message_id,
         reply_markup=builder.as_markup()
     )
+
+# ── Addlist menüsünü göster ────────────────────────────────────────────────────
+async def show_addlists_menu(call: CallbackQuery):
+    addlists = await get_addlists()
+    if not addlists:
+        await call.message.edit_text("❌ Список Addlist пуст.")
+        await call.answer()
+        return
+    
+    text = f"<tg-emoji emoji-id=\"{EMOJI_IDS['remove']}\">➖</tg-emoji> <b>Выберите Addlist для удаления:</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    
+    for addlist in addlists:
+        addlist_id = str(addlist["_id"])
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {addlist.get('name', '')}",
+                callback_data=f"del_al_{addlist_id}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="back_to_admin"
+        )
+    )
+    
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
+
+# ── Addlist silme handler ──────────────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("del_al_"))
+async def process_delete_addlist(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("❌ Доступ запрещен!", show_alert=True)
+        return
+    
+    try:
+        al_id = call.data.split("_")[2]
+        # MongoDB'den asenkron sil
+        await delete_addlist(al_id)
+        await call.answer("✅ Addlist удален!", show_alert=True)
+        # Menüyü yenile
+        await show_addlists_menu(call)
+    except Exception as e:
+        logging.error(f"Addlist silme hatası: {e}")
+        await call.answer("❌ Ошибка при удалении!", show_alert=True)
 
 # /start komut - AYNEN KALDI, HİÇBİR DEĞİŞİKLİK YOK
 @dp.message(Command("start"))
@@ -936,46 +984,7 @@ async def remove_addlist_start(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         await call.answer("❌ Доступ запрещен!", show_alert=True)
         return
-    
-    addlists = await get_addlists()
-    if not addlists:
-        await call.message.edit_text("❌ Список Addlist пуст.")
-        await call.answer()
-        return
-    
-    text = f"<tg-emoji emoji-id=\"{EMOJI_IDS['remove']}\">➖</tg-emoji> <b>Выберите Addlist для удаления:</b>\n\n"
-    builder = InlineKeyboardBuilder()
-    
-    for addlist in addlists:
-        addlist_id = str(addlist["_id"])
-        builder.row(
-            InlineKeyboardButton(
-                text=f" {addlist.get('name', '')}",
-                callback_data=f"del_addlist_{addlist_id}"
-            )
-        )
-    
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="back_to_admin"
-        )
-    )
-    
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("del_addlist_"))
-async def delete_addlist(call: CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("❌ Доступ запрещен!", show_alert=True)
-        return
-    
-    doc_id = call.data.replace("del_addlist_", "")
-    await delete_addlist(doc_id)
-    
-    await call.answer("✅ Addlist удален!", show_alert=True)
-    await remove_addlist_start(call)
+    await show_addlists_menu(call)
 
 @dp.callback_query(F.data == "broadcast")
 async def broadcast_start(call: CallbackQuery, state: FSMContext):
@@ -1326,7 +1335,7 @@ async def delete_posts(call: CallbackQuery):
     await clear_sent_ads()
     
     await call.message.edit_text(
-        f" <b>Посты удалены!</b>\n\n"
+        f"🗑 <b>Посты удалены!</b>\n\n"
         f"✔️ Удалено: <b>{ok}</b>\n"
         f"❌ Не найдено: <b>{fail}</b>"
     )
