@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Botuň sazlamalary
-BOT_TOKEN = '8361874404:AAFuVwE2Sb98k46UShiuCtvjis-4N_Zue6g'
+BOT_TOKEN = '8361874404:AAErFdPydCUSIalFiFaffaf7B-BR9oeWuGM'
 ADMIN_IDS = [6824684800]
 
 # MongoDB
