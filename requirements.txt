@@ -1,4 +1,5 @@
 aiogram
 motor
+httpx
 aiohttp
-requests
+bson
