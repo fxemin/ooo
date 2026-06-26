@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-import httpx  # requests yerine httpx kullanıyoruz
+import requests
 import json
 import re
 import datetime
@@ -149,49 +149,37 @@ logging.basicConfig(
 
 logging.info(f"Admin ID: {ADMIN_IDS[0]}")
 
-# ================= TGRASS FUNKSIÝALARY (DÜZELTİLDİ) =================
-async def get_tgrass_offers(user_id: int, username: str = None, is_premium: bool = False) -> list:
-    """
-    TGrass API'den teklifleri alır.
-    Başarılı: offers listesi döner
-    Başarısız: boş liste döner
-    """
+# ================= TGRASS FUNKSIÝALARY =================
+def get_user_language(user_id):
+    return 'ru'
+
+async def check_tgrass_subscriptions(user_id, username=None, is_premium=False):
     try:
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
-            payload = {
-                "tg_user_id": int(user_id),
-                "tg_login": username or "",
-                "lang": "ru",  # Varsayılan dil
-                "is_premium": is_premium,
-            }
-            
-            headers = {
-                "accept": "application/json",
-                "Content-Type": "application/json",
-                "Auth": TGRASS_API_KEY,
-            }
-            
-            logging.info(f"TGrass API istek: {payload}")
+        import httpx
+        payload = {
+            "tg_user_id": int(user_id),
+            "tg_login": username or "",
+            "lang": get_user_language(user_id),
+            "is_premium": bool(is_premium),
+        }
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/json",
+            "Auth": TGRASS_API_KEY,
+        }
+        
+        logging.info(f"TGrass API istek: {payload}")
+        async with httpx.AsyncClient(verify=False, timeout=60) as client:
             response = await client.post(TGRASS_API_URL, json=payload, headers=headers)
-            
-            if response.status_code != 200:
-                logging.error(f"TGrass API HTTP hatası: {response.status_code}")
-                return []
-            
+        
+        if response.status_code == 200:
             resp_json = response.json()
             logging.info(f"TGrass API cevap: {resp_json}")
-            
-            # API'den gelen verileri kontrol et
-            if resp_json.get("status") == "ok":
-                # Kullanıcı tüm teklifleri tamamlamış
-                return []
             
             if resp_json.get("status") == "not_ok":
                 offers = resp_json.get("offers", [])
                 formatted_offers = []
-                
                 for offer in offers:
-                    # Kanal adını al
                     channel_name = None
                     if "title" in offer and offer["title"]:
                         channel_name = offer["title"]
@@ -204,7 +192,6 @@ async def get_tgrass_offers(user_id: int, username: str = None, is_premium: bool
                     else:
                         channel_name = "Спонсор канал"
                     
-                    # Link'i al
                     channel_link = None
                     if "link" in offer and offer["link"]:
                         channel_link = offer["link"]
@@ -218,27 +205,14 @@ async def get_tgrass_offers(user_id: int, username: str = None, is_premium: bool
                     formatted_offers.append({
                         "title": channel_name,
                         "link": channel_link,
-                        "id": offer.get("id", 0),
-                        "type": offer.get("type", "channel")
+                        "id": offer.get("id", 0)
                     })
                 
                 return formatted_offers
-            
-            return []
-            
-    except httpx.TimeoutException:
-        logging.error("TGrass API zaman aşımı")
         return []
     except Exception as e:
-        logging.error(f"TGrass hatası: {e}")
+        logging.error(f"TGrass error: {e}")
         return []
-
-async def check_tgrass_subscriptions_async(user_id: int, username: str = None, is_premium: bool = False) -> list:
-    """
-    Kullanıcının abone olmadığı TGrass tekliflerini döndürür.
-    """
-    offers = await get_tgrass_offers(user_id, username, is_premium)
-    return offers
 
 def parse_premium_emoji(text):
     pattern = r'<tg-emoji emoji-id="([^"]+)">([^<]+)</tg-emoji>'
@@ -376,7 +350,10 @@ async def get_stats():
     total = await col_users.count_documents({})
     return total, 0, 0
 
-# ================= TGRASS YARDIMCI FONKSİYONLAR =================
+# ================= TGRASS FUNKSIÝALARY (Async) =================
+
+async def check_tgrass_subscriptions_async(user_id, username=None, is_premium=False):
+    return await check_tgrass_subscriptions(user_id, username, is_premium)
 
 async def get_channel_name(channel_id=None, link=None):
     try:
@@ -399,7 +376,6 @@ async def get_all_channels(user_id, username=None, is_premium=False):
     used_urls = set()
     all_channels = []
 
-    # Sponsor kanalları ekle
     for sponsor in sponsors:
         link = sponsor.get("link", "")
         if link not in used_urls and sponsor.get("position") is not None:
@@ -414,7 +390,6 @@ async def get_all_channels(user_id, username=None, is_premium=False):
                 'is_tgrass': False
             })
 
-    # Addlist'leri ekle
     for addlist in addlists:
         link = addlist.get("link", "")
         if link not in used_urls and addlist.get("position") is not None:
@@ -429,7 +404,6 @@ async def get_all_channels(user_id, username=None, is_premium=False):
                 'is_tgrass': False
             })
 
-    # TGrass tekliflerini ekle (eğer aktifse)
     tgrass_enabled = await get_tgrass_enabled()
     if tgrass_enabled:
         tgrass_offers = await check_tgrass_subscriptions_async(user_id, username, is_premium)
@@ -451,18 +425,12 @@ async def get_all_channels(user_id, username=None, is_premium=False):
                     'offer_id': offer.get('id', i)
                 })
     
-    # Pozisyona göre sırala
     all_channels.sort(key=lambda x: x['position'])
     return all_channels
 
 async def check_all_subscriptions(user_id, username=None, is_premium=False):
-    """
-    Kullanıcının tüm kanallara abone olup olmadığını kontrol eder.
-    Döner: (hepsi_abone_mi, abone_olunmamış_kanallar_listesi)
-    """
     not_subscribed = []
     
-    # Sponsorları kontrol et
     sponsors = await get_sponsors()
     for sponsor in sponsors:
         channel_id = sponsor.get("channel_id")
@@ -473,7 +441,6 @@ async def check_all_subscriptions(user_id, username=None, is_premium=False):
                 'type': 'sponsor'
             })
     
-    # TGrass tekliflerini kontrol et (eğer aktifse)
     tgrass_enabled = await get_tgrass_enabled()
     if tgrass_enabled:
         tgrass_offers = await check_tgrass_subscriptions_async(user_id, username, is_premium)
@@ -587,14 +554,16 @@ async def process_delete_addlist(call: CallbackQuery):
     
     try:
         al_id = call.data.split("_")[2]
+        # MongoDB'den asenkron sil
         await delete_addlist(al_id)
         await call.answer("✅ Addlist удален!", show_alert=True)
+        # Menüyü yenile
         await show_addlists_menu(call)
     except Exception as e:
         logging.error(f"Addlist silme hatası: {e}")
         await call.answer("❌ Ошибка при удалении!", show_alert=True)
 
-# /start komut - AYNEN KALDI
+# /start komut - AYNEN KALDI, HİÇBİR DEĞİŞİKLİK YOK
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -624,21 +593,20 @@ async def cmd_start(message: Message):
     builder = InlineKeyboardBuilder()
     for channel in all_channels:
         if channel['type'] == 'tgrass':
-            builder.button(
-                text=f"{channel['name']}", 
-                url=channel['link'],
-                icon_custom_emoji_id=EMOJI_IDS["chanel"]
-            )
+            builder.button(text=f"{channel['name']}", url=channel['link'],
+            style="primary",
+            icon_custom_emoji_id=EMOJI_IDS["chanel"]
+        )
         else:
-            builder.button(
-                text=channel['name'], 
-                url=channel['link'],
-                icon_custom_emoji_id=EMOJI_IDS["chanel"]
-            )
+            builder.button(text=channel['name'], url=channel['link'],
+            style="primary",
+            icon_custom_emoji_id=EMOJI_IDS["chanel"]
+        )
     
     builder.button(
         text="Подписался",
         callback_data="check_sub",
+        style="success",
         icon_custom_emoji_id=EMOJI_IDS["chik"]
     )
     
@@ -673,7 +641,7 @@ async def check_sub_callback(call: CallbackQuery):
                 f"<tg-emoji emoji-id=\"{EMOJI_IDS['warning']}\">🔐</tg-emoji> VPN код еще не настроен администратором."
             )
 
-# Admin panel
+# Admin panel - style parametreleri kaldırıldı, premium emojiler korundu
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -860,11 +828,15 @@ async def delete_sponsor_callback(call: CallbackQuery):
         await call.answer("❌ Доступ запрещен!", show_alert=True)
         return
     
+    # callback_data'dan ID'yi al
     doc_id = call.data.replace("del_sponsor_", "")
     
     try:
+        # MongoDB'den sil
         await delete_sponsor(doc_id)
         await call.answer("✅ Спонсор удален!", show_alert=True)
+        
+        # Menüyü yenile
         await remove_sponsor_start(call)
     except Exception as e:
         logging.error(f"Sponsor silme hatası: {e}")
@@ -1471,6 +1443,7 @@ async def run_web_server():
     site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
     await site.start()
     print(f"🌐 Web sunucusu başlatıldı: http://0.0.0.0:{PORT}")
+    # Sonsuza kadar bekle
     await asyncio.Event().wait()
 
 # ================= ANA FONKSİYON =================
@@ -1484,8 +1457,8 @@ async def main():
     print(f"🌐 Railway Health Check: http://0.0.0.0:{PORT}")
     
     try:
-        # TGrass API testi
-        test_offers = await get_tgrass_offers(123456789, "test_user", False)
+        # Fonksiyon async olduğu için başına 'await' eklendi:
+        test_offers = await check_tgrass_subscriptions(123456789, "test_user", False)
         print(f"📡 TGrass API test: {len(test_offers)} channel(s) received")
     except Exception as e:
         print(f"❌ TGrass API test failed: {e}")
